@@ -43,8 +43,8 @@ cp .env.example .env
 4. Launch agent with the LangGraph server locally:
 
 ```bash
-# Install dependencies and start the LangGraph server
-uvx --refresh --from "langgraph-cli[inmem]" --with-editable . --python 3.11 langgraph dev --allow-blocking
+# Install dependencies and start the local LangGraph server (without deployment auth)
+uvx --refresh --from "langgraph-cli[inmem]" --with-editable . --python 3.11 langgraph dev --config langgraph.local.json --allow-blocking
 ```
 
 This will open the LangGraph Studio UI in your browser.
@@ -70,7 +70,36 @@ Open Deep Research supports a wide range of LLM providers via the [init_chat_mod
 
 > Note: the selected model will need to support [structured outputs](https://python.langchain.com/docs/integrations/chat/) and [tool calling](https://python.langchain.com/docs/how_to/tool_calling/).
 
-> Note: For OpenRouter: Follow [this guide](https://github.com/langchain-ai/open_deep_research/issues/75#issuecomment-2811472408) and for local models via Ollama  see [setup instructions](https://github.com/langchain-ai/open_deep_research/issues/65#issuecomment-2743586318).
+> Note: For OpenRouter, follow [this guide](https://github.com/langchain-ai/open_deep_research/issues/75#issuecomment-2811472408).
+
+#### Using Ollama locally
+
+Open Deep Research can use models served by a local [Ollama](https://ollama.com/) instance. The Ollama server must be running on the same machine as the LangGraph app.
+
+1. [Install Ollama](https://ollama.com/download), then start the Ollama app (or start the Ollama service for your operating system).
+2. Pull a model that supports both tool calling and structured output. For example:
+
+   ```bash
+   ollama pull gpt-oss:20b
+   ollama list
+   ```
+
+   Choose a model appropriate for your hardware; see Ollama's [model library](https://ollama.com/search?c=tools) for models with tool-calling support.
+3. Install or update the project dependencies so the [LangChain Ollama integration](https://docs.langchain.com/oss/python/integrations/chat/ollama) is available:
+
+   ```bash
+   uv sync
+   ```
+
+4. Start the app using the local-development command in the [Quickstart](#-quickstart). It uses `langgraph.local.json`, which omits the deployment's Supabase authentication so local use doesn't require Supabase credentials. In LangGraph Studio, open **Manage Assistants** and set the model fields you want to run locally to `ollama:gpt-oss:20b`:
+   - **Summarization Model**
+   - **Research Model**
+   - **Compression Model**
+   - **Final Report Model**
+
+   Change the model suffix if you pulled a different model. Set each field separately; any fields left on their defaults still use OpenAI models and need their API key.
+
+Ollama's default local endpoint is `http://localhost:11434`, so no Ollama API key is needed for local use. To avoid external model and search APIs, set all four model fields to Ollama and choose **None** for `search_api`. This disables web search; Tavily search, if selected, requires its API key. To disable LangSmith tracing and its outbound requests too, set `LANGSMITH_TRACING=false` in `.env`.
 
 #### Search API :mag:
 
