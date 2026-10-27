@@ -42,7 +42,7 @@ from open_deep_research.state import (
 from open_deep_research.utils import (
     anthropic_websearch_called,
     get_all_tools,
-    get_model_config,
+    get_api_key_for_model,
     get_model_token_limit,
     get_notes_from_tool_calls,
     get_today_str,
@@ -78,12 +78,13 @@ async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Comman
     
     # Step 2: Prepare the model for structured clarification analysis
     messages = state["messages"]
-    model_config = get_model_config(
-        configurable.research_model,
-        configurable.research_model_max_tokens,
-        config,
-        tags=["langsmith:nostream"],
-    )
+    model_limit_param = "num_predict" if configurable.research_model.startswith("ollama:") else "max_tokens"
+    model_config = {
+        "model": configurable.research_model,
+        model_limit_param: configurable.research_model_max_tokens,
+        "api_key": get_api_key_for_model(configurable.research_model, config),
+        "tags": ["langsmith:nostream"]
+    }
     
     # Configure model with structured output and retry logic
     clarification_model = (
@@ -131,12 +132,13 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     """
     # Step 1: Set up the research model for structured output
     configurable = Configuration.from_runnable_config(config)
-    research_model_config = get_model_config(
-        configurable.research_model,
-        configurable.research_model_max_tokens,
-        config,
-        tags=["langsmith:nostream"],
-    )
+    researcher_limit_param = "num_predict" if configurable.research_model.startswith("ollama:") else "max_tokens"
+    research_model_config = {
+        "model": configurable.research_model,
+        researcher_limit_param: configurable.research_model_max_tokens,
+        "api_key": get_api_key_for_model(configurable.research_model, config),
+        "tags": ["langsmith:nostream"]
+    }
     
     # Configure model for structured research question generation
     research_model = (
@@ -191,12 +193,13 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
     """
     # Step 1: Configure the supervisor model with available tools
     configurable = Configuration.from_runnable_config(config)
-    research_model_config = get_model_config(
-        configurable.research_model,
-        configurable.research_model_max_tokens,
-        config,
-        tags=["langsmith:nostream"],
-    )
+    supervisor_limit_param = "num_predict" if configurable.research_model.startswith("ollama:") else "max_tokens"
+    research_model_config = {
+        "model": configurable.research_model,
+        supervisor_limit_param: configurable.research_model_max_tokens,
+        "api_key": get_api_key_for_model(configurable.research_model, config),
+        "tags": ["langsmith:nostream"]
+    }
     
     # Available tools: research delegation, completion signaling, and strategic thinking
     lead_researcher_tools = [ConductResearch, ResearchComplete, think_tool]
@@ -389,12 +392,13 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
         )
     
     # Step 2: Configure the researcher model with tools
-    research_model_config = get_model_config(
-        configurable.research_model,
-        configurable.research_model_max_tokens,
-        config,
-        tags=["langsmith:nostream"],
-    )
+    researcher_limit_param = "num_predict" if configurable.research_model.startswith("ollama:") else "max_tokens"
+    research_model_config = {
+        "model": configurable.research_model,
+        researcher_limit_param: configurable.research_model_max_tokens,
+        "api_key": get_api_key_for_model(configurable.research_model, config),
+        "tags": ["langsmith:nostream"]
+    }
     
     # Prepare system prompt with MCP context if available
     researcher_prompt = research_system_prompt.format(
@@ -524,14 +528,13 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     """
     # Step 1: Configure the compression model
     configurable = Configuration.from_runnable_config(config)
-    synthesizer_model = configurable_model.with_config(
-        get_model_config(
-            configurable.compression_model,
-            configurable.compression_model_max_tokens,
-            config,
-            tags=["langsmith:nostream"],
-        )
-    )
+    compression_limit_param = "num_predict" if configurable.compression_model.startswith("ollama:") else "max_tokens"
+    synthesizer_model = configurable_model.with_config({
+        "model": configurable.compression_model,
+        compression_limit_param: configurable.compression_model_max_tokens,
+        "api_key": get_api_key_for_model(configurable.compression_model, config),
+        "tags": ["langsmith:nostream"]
+    })
     
     # Step 2: Prepare messages for compression
     researcher_messages = state.get("researcher_messages", [])
@@ -626,12 +629,13 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
     
     # Step 2: Configure the final report generation model
     configurable = Configuration.from_runnable_config(config)
-    writer_model_config = get_model_config(
-        configurable.final_report_model,
-        configurable.final_report_model_max_tokens,
-        config,
-        tags=["langsmith:nostream"],
-    )
+    writer_limit_param = "num_predict" if configurable.final_report_model.startswith("ollama:") else "max_tokens"
+    writer_model_config = {
+        "model": configurable.final_report_model,
+        writer_limit_param: configurable.final_report_model_max_tokens,
+        "api_key": get_api_key_for_model(configurable.final_report_model, config),
+        "tags": ["langsmith:nostream"]
+    }
     
     # Step 3: Attempt report generation with token limit retry logic
     max_retries = 3

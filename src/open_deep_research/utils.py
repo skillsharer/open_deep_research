@@ -82,13 +82,14 @@ async def tavily_search(
     max_char_to_include = configurable.max_content_length
     
     # Initialize summarization model with retry logic
+    summarization_limit_param = "num_predict" if configurable.summarization_model.startswith("ollama:") else "max_tokens"
     summarization_model = init_chat_model(
-        **get_model_config(
-            configurable.summarization_model,
-            configurable.summarization_model_max_tokens,
-            config,
-            tags=["langsmith:nostream"],
-        )
+        model=configurable.summarization_model,
+        **{
+            summarization_limit_param: configurable.summarization_model_max_tokens,
+            "api_key": get_api_key_for_model(configurable.summarization_model, config),
+            "tags": ["langsmith:nostream"],
+        },
     ).with_structured_output(Summary).with_retry(
         stop_after_attempt=configurable.max_structured_output_retries
     )
@@ -913,21 +914,6 @@ def get_api_key_for_model(model_name: str, config: RunnableConfig):
         elif model_name.startswith("google"):
             return os.getenv("GOOGLE_API_KEY")
         return None
-
-def get_model_config(
-    model_name: str,
-    max_tokens: int,
-    config: RunnableConfig,
-    tags: List[str] | None = None,
-) -> Dict[str, Any]:
-    """Build model settings with the provider-specific output token parameter."""
-    token_limit_parameter = "num_predict" if model_name.lower().startswith("ollama:") else "max_tokens"
-    return {
-        "model": model_name,
-        token_limit_parameter: max_tokens,
-        "api_key": get_api_key_for_model(model_name, config),
-        "tags": tags or [],
-    }
 
 def get_tavily_api_key(config: RunnableConfig):
     """Get Tavily API key from environment or config."""
