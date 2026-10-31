@@ -222,10 +222,10 @@ async def searxng_search(
                 if "text/html" not in response.headers.get("Content-Type", ""):
                     raise ValueError(f"Search result is not an HTML page: {url}")
                 html = await response.text()
-            page_text = extract(html, url=url)
+            page_text = await asyncio.to_thread(extract, html, url=url)
             if not page_text:
                 raise ValueError(f"Could not extract article text from search result: {url}")
-            metadata = extract_metadata(html)
+            metadata = await asyncio.to_thread(extract_metadata, html)
             return {
                 "title": metadata.title if metadata and metadata.title else result.get("title") or url,
                 "url": metadata.url if metadata and metadata.url else url,
