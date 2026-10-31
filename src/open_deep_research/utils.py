@@ -6,6 +6,7 @@ import os
 import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal, Optional
+from urllib.parse import urlencode
 
 import aiohttp
 from langchain.chat_models import init_chat_model
@@ -173,6 +174,45 @@ async def tavily_search_async(
     # Execute all search queries in parallel and return results
     search_results = await asyncio.gather(*search_tasks)
     return search_results
+
+
+@tool(description="Search the web using a SearXNG instance.")
+async def searxng_search(
+    queries: List[str],
+    max_results: Annotated[int, InjectedToolArg] = 5,
+) -> str:
+    """Search a configured SearXNG instance and format its results."""
+    base_url = os.getenv("SEARXNG_URL", "").rstrip("/")
+    if not base_url:
+        raise ValueError("SEARXNG_URL must be set when search_api is 'searxng'.")
+
+    async def search(query: str) -> dict[str, Any]:
+        params = urlencode({"q": query, "format": "json"})
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{base_url}/search?{params}",
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                response.raise_for_status()
+                return await response.json()
+
+    results = await asyncio.gather(*(search(query) for query in queries))
+    formatted = []
+    seen_urls = set()
+    for query, response in zip(queries, results):
+        for result in response.get("results", [])[:max_results]:
+            url = result.get("url")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            formatted.append(
+                f"--- SOURCE: {result.get('title') or url} ---\n"
+                f"URL: {url}\n"
+                f"Query: {query}\n"
+                f"SUMMARY:\n{result.get('content') or ''}"
+            )
+    return "\n\n".join(formatted) if formatted else "No search results found."
+
 
 async def summarize_webpage(model: BaseChatModel, webpage_content: str) -> str:
     """Summarize webpage content using AI model with timeout protection.
@@ -558,6 +598,15 @@ async def get_search_tool(search_api: SearchAPI):
             **(search_tool.metadata or {}), 
             "type": "search", 
             "name": "web_search"
+        }
+        return [search_tool]
+
+    elif search_api == SearchAPI.SEARXNG:
+        search_tool = searxng_search
+        search_tool.metadata = {
+            **(search_tool.metadata or {}),
+            "type": "search",
+            "name": "web_search",
         }
         return [search_tool]
         

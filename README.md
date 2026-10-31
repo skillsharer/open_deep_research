@@ -105,6 +105,8 @@ Ollama's default local endpoint is `http://localhost:11434`, so no Ollama API ke
 
 Open Deep Research supports a wide range of search tools. By default it uses the [Tavily](https://www.tavily.com/) search API. Has full MCP compatibility and work native web search for Anthropic and OpenAI. See the `search_api` and `mcp_config` fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
 
+To use a free, self-hosted search engine, configure [SearXNG](https://docs.searxng.org/admin/installation.html) and expose its HTTP endpoint. Set `SEARXNG_URL` in `.env` to the instance base URL (for example, `http://localhost:8080`), then select `searxng` for **Search API** in LangGraph Studio. SearXNG's JSON format must be enabled on the instance. No search API key is required; the selected language model still needs its provider credentials. Tavily remains the default.
+
 #### Other 
 
 See the fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) for various other settings to customize the behavior of Open Deep Research. 
