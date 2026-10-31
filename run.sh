@@ -86,4 +86,4 @@ if ! ollama list | grep -Fq "$OLLAMA_MODEL_NAME"; then
 fi
 
 uvx --refresh --from "langgraph-cli[inmem]" --with-editable . --python 3.11 \
-    langgraph dev --config langgraph.local.json --allow-blocking
+    langgraph dev --config langgraph.local.json --allow-blocking --no-reload
