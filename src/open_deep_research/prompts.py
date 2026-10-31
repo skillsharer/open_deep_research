@@ -196,9 +196,10 @@ Only these fully comprehensive cleaned findings are going to be returned to the 
 <Guidelines>
 1. Your output findings should be fully comprehensive and include ALL of the information and sources that the researcher has gathered from tool calls and web searches. It is expected that you repeat key information verbatim.
 2. This report can be as long as necessary to return ALL of the information that the researcher has gathered.
-3. In your report, you should return inline citations for each source that the researcher found.
-4. You should include a "Sources" section at the end of the report that lists all of the sources the researcher found with corresponding citations, cited against statements in the report.
-5. Make sure to include ALL of the sources that the researcher gathered in the report, and how they were used to answer the question!
+3. Preserve each source's title, URL, author, and publication date exactly as provided; do not omit source metadata.
+4. Include source records in the output so the final report can cite the original URLs.
+   If a search returned "NO SOURCES FOUND", report that explicitly (with the queries and unresponsive engines) and add no findings from your own knowledge.
+5. Do not invent or alter sources or metadata.
 6. It's really important not to lose any sources. A later LLM will be used to merge this report with others, so having all of the sources is critical.
 </Guidelines>
 
@@ -248,7 +249,7 @@ Here are the findings from the research that you conducted:
 Please create a detailed answer to the overall research brief that:
 1. Is well-organized with proper headings (# for title, ## for sections, ### for subsections)
 2. Includes specific facts and insights from the research
-3. References relevant sources using [Title](URL) format
+3. Cite source-backed claims inline with numbered references such as [1], [2]. Only cite URLs present in the research findings; never invent citations.
 4. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the overall research question. People are using you for deep research and will expect detailed, comprehensive answers.
 5. Includes a "Sources" section at the end with all referenced links
 
@@ -295,11 +296,19 @@ Make sure the final answer report is in the SAME language as the human messages 
 
 Format the report in clear markdown with proper structure and include source references where appropriate.
 
+<No Sources Rule>
+If the research findings contain no sources (e.g. searches returned "NO SOURCES FOUND"), do NOT write a report from your own knowledge. State clearly that the search returned no sources, name the queries and unresponsive search engines if given, and stop.
+Only make claims that are supported by a cited source in the findings.
+Sources marked "SOURCE UNAVAILABLE" could not be read: never use them as evidence; at most list them as unread.
+</No Sources Rule>
+
 <Citation Rules>
 - Assign each unique URL a single citation number in your text
 - End with ### Sources that lists each source with corresponding numbers
 - IMPORTANT: Number sources sequentially without gaps (1,2,3,4...) in the final list regardless of which sources you choose
 - Each source should be a separate line item in a list, so that in markdown it is rendered as a list.
+- Include every URL present in the research findings in the Sources list, and ensure every numbered inline citation resolves to a matching source entry.
+- Include each available source author and publication date in its Sources entry. Do not invent missing metadata.
 - Example format:
   [1] Source Title: URL
   [2] Source Title: URL

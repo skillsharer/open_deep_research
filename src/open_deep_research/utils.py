@@ -29,6 +29,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.config import get_store
 from mcp import McpError
 from tavily import AsyncTavilyClient
+from trafilatura import extract, extract_metadata
 
 from open_deep_research.configuration import Configuration, SearchAPI
 from open_deep_research.prompts import summarize_webpage_prompt
@@ -181,37 +182,88 @@ async def searxng_search(
     queries: List[str],
     max_results: Annotated[int, InjectedToolArg] = 5,
 ) -> str:
-    """Search a configured SearXNG instance and format its results."""
+    """Search SearXNG, fetch matching pages, and return source-linked content."""
     base_url = os.getenv("SEARXNG_URL", "").rstrip("/")
     if not base_url:
         raise ValueError("SEARXNG_URL must be set when search_api is 'searxng'.")
 
-    async def search(query: str) -> dict[str, Any]:
-        params = urlencode({"q": query, "format": "json"})
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{base_url}/search?{params}",
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as response:
+    timeout = aiohttp.ClientTimeout(total=30)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async def search(query: str) -> dict[str, Any]:
+            params = urlencode({"q": query, "format": "json"})
+            async with session.get(f"{base_url}/search?{params}") as response:
                 response.raise_for_status()
                 return await response.json()
 
-    results = await asyncio.gather(*(search(query) for query in queries))
+        results = []
+        for index, query in enumerate(queries):
+            if index:
+                await asyncio.sleep(2)  # avoid tripping upstream engine rate limits
+            results.append(await search(query))
+        matches = []
+        seen_urls = set()
+        for query, response in zip(queries, results):
+            for result in response.get("results", [])[:max_results]:
+                url = result.get("url")
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                matches.append((query, result))
+
+        async def fetch_page(query: str, result: dict[str, Any]) -> dict[str, str]:
+            url = result["url"]
+            async with session.get(url, allow_redirects=True) as response:
+                response.raise_for_status()
+                if "text/html" not in response.headers.get("Content-Type", ""):
+                    raise ValueError(f"Search result is not an HTML page: {url}")
+                html = await response.text()
+            page_text = extract(html, url=url)
+            if not page_text:
+                raise ValueError(f"Could not extract article text from search result: {url}")
+            metadata = extract_metadata(html)
+            return {
+                "title": metadata.title if metadata and metadata.title else result.get("title") or url,
+                "url": metadata.url if metadata and metadata.url else url,
+                "author": metadata.author if metadata and metadata.author else "",
+                "date": metadata.date if metadata and metadata.date else "",
+                "content": page_text,
+            }
+
+        pages = await asyncio.gather(
+            *(fetch_page(query, result) for query, result in matches),
+            return_exceptions=True,
+        )
+
     formatted = []
-    seen_urls = set()
-    for query, response in zip(queries, results):
-        for result in response.get("results", [])[:max_results]:
-            url = result.get("url")
-            if not url or url in seen_urls:
-                continue
-            seen_urls.add(url)
+    for (query, result), page in zip(matches, pages):
+        if isinstance(page, BaseException):
             formatted.append(
-                f"--- SOURCE: {result.get('title') or url} ---\n"
-                f"URL: {url}\n"
+                f"--- SOURCE UNAVAILABLE: {result.get('title') or result['url']} ---\n"
+                f"URL: {result['url']}\n"
                 f"Query: {query}\n"
-                f"SUMMARY:\n{result.get('content') or ''}"
+                f"Page could not be read ({page}); no content available."
             )
-    return "\n\n".join(formatted) if formatted else "No search results found."
+            continue
+        formatted.append(
+            f"--- SOURCE: {page['title']} ---\n"
+            f"URL: {page['url']}\n"
+            f"Author: {page['author'] or 'Not provided'}\n"
+            f"Published: {page['date'] or 'Not provided'}\n"
+            f"Query: {query}\n"
+            f"CONTENT:\n{page['content']}"
+        )
+    if not formatted:
+        unresponsive = sorted({f"{name} ({reason})" for response in results for name, reason in response.get("unresponsive_engines", [])})
+        return (
+            f"NO SOURCES FOUND for queries: {queries}. "
+            f"Unresponsive search engines: {', '.join(unresponsive) or 'none'}."
+        )
+    return "\n\n".join(formatted)
 
 
 async def summarize_webpage(model: BaseChatModel, webpage_content: str) -> str:

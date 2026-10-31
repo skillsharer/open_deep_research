@@ -57,6 +57,15 @@ This will open the LangGraph Studio UI in your browser.
 
 Ask a question in the `messages` input field and click `Submit`. Select different configuration in the "Manage Assistants" tab.
 
+To start the free local path with SearXNG and Ollama, install Docker, Ollama, and `uv`, then run:
+
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+The script loads `.env`, starts Ollama if needed, runs SearXNG in Docker, downloads the model specified by `OLLAMA_MODEL` if it is missing, and launches the local LangGraph server configured to use both. The default model is `ollama:gemma4:latest`; change `OLLAMA_MODEL` in `.env` to select another Ollama model. Stop with `Ctrl+C`.
+
 ### ⚙️ Configurations
 
 #### LLM :brain:
@@ -105,7 +114,9 @@ Ollama's default local endpoint is `http://localhost:11434`, so no Ollama API ke
 
 Open Deep Research supports a wide range of search tools. By default it uses the [Tavily](https://www.tavily.com/) search API. Has full MCP compatibility and work native web search for Anthropic and OpenAI. See the `search_api` and `mcp_config` fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
 
-To use a free, self-hosted search engine, configure [SearXNG](https://docs.searxng.org/admin/installation.html) and expose its HTTP endpoint. Set `SEARXNG_URL` in `.env` to the instance base URL (for example, `http://localhost:8080`), then select `searxng` for **Search API** in LangGraph Studio. SearXNG's JSON format must be enabled on the instance. No search API key is required; the selected language model still needs its provider credentials. Tavily remains the default.
+To use a free, self-hosted search engine, configure [SearXNG](https://docs.searxng.org/admin/installation.html) and expose its HTTP endpoint. Set `SEARXNG_URL` in `.env` to the instance base URL (for example, `http://localhost:8080`), then select `searxng` for **Search API** in LangGraph Studio. SearXNG's JSON format must be enabled on the instance. Search results are opened and their article text is extracted with [Trafilatura](https://trafilatura.readthedocs.io/en/latest/); fetch or extraction failures are reported rather than replaced with snippets. No search API key is required; the selected language model still needs its provider credentials. Tavily remains the default.
+
+Run the optional live checks separately with `uv run pytest -m live tests/test_live_search.py -k searxng` and `uv run pytest -m live tests/test_live_search.py -k trafilatura`. The SearXNG test requires the configured instance to be running; the Trafilatura test fetches a public webpage.
 
 #### Other 
 
