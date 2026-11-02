@@ -2,13 +2,17 @@
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
+import shutil
 import warnings
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
+from uuid import uuid4
 
 import aiohttp
 from langchain_core.messages import (
@@ -23,6 +27,7 @@ from langchain_core.tools import (
     ToolException,
     tool,
 )
+from langchain_ollama import OllamaEmbeddings
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.config import get_store
 from mcp import McpError
@@ -30,6 +35,61 @@ from trafilatura import extract, extract_metadata
 
 from open_deep_research.configuration import Configuration, SearchAPI
 from open_deep_research.state import ResearchComplete
+
+
+def select_passages(
+    text: str,
+    query: str,
+    embedder: OllamaEmbeddings,
+    max_passages: int = 3,
+) -> str:
+    """Keep the query-relevant passages while preserving local context."""
+    passages = []
+    step = 1400
+    size = 1600
+    for start in range(0, len(text), step):
+        passage = text[start : start + size].strip()
+        if passage:
+            passages.append((start, passage))
+
+    if len(passages) <= max_passages:
+        return "\n\n".join(passage for _, passage in passages)
+
+    query_embedding = embedder.embed_query(query)
+    passage_embeddings = embedder.embed_documents([passage for _, passage in passages])
+    query_norm = sum(value * value for value in query_embedding) ** 0.5
+    scored = []
+    for (start, passage), embedding in zip(passages, passage_embeddings):
+        passage_norm = sum(value * value for value in embedding) ** 0.5
+        score = (
+            sum(left * right for left, right in zip(query_embedding, embedding))
+            / (query_norm * passage_norm)
+            if query_norm and passage_norm
+            else 0
+        )
+        scored.append((score, start, passage))
+
+    selected = sorted(scored, key=lambda item: (-item[0], item[1]))[:max_passages]
+    return "\n\n".join(passage for _, _, passage in sorted(selected, key=lambda item: item[1]))
+
+
+def write_run_artifact(run_dir: Path, page: dict[str, str]) -> None:
+    """Persist one processed source atomically so failed runs can be inspected."""
+    source_id = "S" + hashlib.sha1(page["url"].encode()).hexdigest()[:6]
+    temporary = run_dir / f"{source_id}.json.tmp"
+    target = run_dir / f"{source_id}.json"
+    with temporary.open("w", encoding="utf-8") as file:
+        json.dump(page, file, ensure_ascii=False)
+    temporary.replace(target)
+
+
+def write_run_manifest(run_dir: Path, data: dict[str, Any]) -> None:
+    """Write run state atomically so an interrupted run remains readable."""
+    temporary = run_dir / "manifest.json.tmp"
+    with temporary.open("w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False)
+    temporary.replace(run_dir / "manifest.json")
+
 
 @tool(description="Search the web using a SearXNG instance.")
 async def searxng_search(
@@ -40,8 +100,15 @@ async def searxng_search(
     if not base_url:
         raise ValueError("SEARXNG_URL must be set when search_api is 'searxng'.")
 
-    max_results = int(os.getenv("SEARXNG_MAX_RESULTS", "5"))
+    max_results = int(os.getenv("SEARXNG_MAX_RESULTS", "10"))
+    max_passages = int(os.getenv("SEARXNG_MAX_PASSAGES", "3"))
+    embedding_model = os.getenv("EMBEDDING_MODEL", "nomic-embed-text").removeprefix("ollama:")
     languages = [lang.strip() for lang in os.getenv("SEARXNG_LANGUAGES", "all").split(",") if lang.strip()]
+    run_root = Path(os.getenv("RESEARCH_RUN_DIR", ".research-runs"))
+    run_dir = run_root / uuid4().hex
+    run_dir.mkdir(parents=True, exist_ok=True)
+    write_run_manifest(run_dir, {"status": "in_progress", "queries": queries})
+    embedder = OllamaEmbeddings(model=embedding_model)
 
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {
@@ -100,14 +167,18 @@ async def searxng_search(
             if not page_text:
                 raise ValueError(f"Could not extract article text from search result: {url}")
             metadata = await asyncio.to_thread(extract_metadata, html)
-            return {
+            page = {
                 "title": result.get("title") or (metadata.title if metadata and metadata.title else url),
                 "snippet": " ".join((result.get("content") or "").split()),
                 "url": metadata.url if metadata and metadata.url else url,
                 "author": metadata.author if metadata and metadata.author else "",
                 "date": metadata.date if metadata and metadata.date else "",
-                "content": note + page_text,
+                "content": note + await asyncio.to_thread(
+                    select_passages, page_text, query, embedder, max_passages
+                ),
             }
+            await asyncio.to_thread(write_run_artifact, run_dir, page)
+            return page
 
         pages = await asyncio.gather(
             *(fetch_page(query, result) for query, result in matches),
@@ -135,11 +206,16 @@ async def searxng_search(
             f"CONTENT:\n{page['content']}"
         )
     if not formatted:
+        write_run_manifest(run_dir, {"status": "failed", "queries": queries})
         unresponsive = sorted({f"{name} ({reason})" for response in results for name, reason in response.get("unresponsive_engines", [])})
         return (
             f"NO SOURCES FOUND for queries: {queries}. "
             f"Unresponsive search engines: {', '.join(unresponsive) or 'none'}."
         )
+    if not any(isinstance(page, BaseException) for page in pages):
+        shutil.rmtree(run_dir)
+    else:
+        write_run_manifest(run_dir, {"status": "failed", "queries": queries})
     return "\n\n".join(formatted)
 
 

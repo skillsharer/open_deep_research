@@ -1,6 +1,7 @@
 """Main LangGraph implementation for the Deep Research agent."""
 
 import asyncio
+import re
 from typing import Literal
 
 from langchain.chat_models import init_chat_model
@@ -54,6 +55,26 @@ from open_deep_research.utils import (
 configurable_model = init_chat_model(
     configurable_fields=("model", "max_tokens", "num_predict"),
 )
+
+def _has_requirement_evidence(
+    requirements: list[str],
+    raw_notes: str,
+    source_ids: list[str],
+) -> bool:
+    """Require one source-backed evidence block for every planned requirement."""
+    if not requirements or not raw_notes or not source_ids:
+        return False
+    blocks = re.split(r"(?=Requirement \d+:)", raw_notes)
+    covered_numbers = {
+        int(match.group(1))
+        for block in blocks
+        if "Evidence:" in block
+        and re.search(r"Sources?:.*S[0-9a-f]{6}", block)
+        for match in [re.match(r"Requirement (\d+):", block)]
+        if match
+    }
+    return covered_numbers >= set(range(1, len(requirements) + 1))
+
 
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
     """Analyze user messages and ask clarifying questions if the research scope is unclear.
@@ -248,7 +269,44 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
         tool_call["name"] == "ResearchComplete" 
         for tool_call in most_recent_message.tool_calls
     )
-    
+    has_research_results = bool(state.get("raw_notes"))
+    has_pending_dimensions = any(
+        item["status"] == "pending" for item in state.get("research_plan", [])
+    )
+
+    if (research_complete_tool_call or no_tool_calls) and (
+        not has_research_results or has_pending_dimensions
+    ):
+        if research_iterations >= configurable.max_researcher_iterations:
+            return Command(
+                goto=END,
+                update={
+                    "notes": get_notes_from_tool_calls(supervisor_messages),
+                    "research_brief": state.get("research_brief", "")
+                }
+            )
+        return Command(
+            goto="supervisor",
+            update={
+                "supervisor_messages": [
+                    ToolMessage(
+                        content=(
+                            "Research cannot be completed yet: "
+                            + (
+                                "no researcher returned evidence. "
+                                "Delegate at least one focused ConductResearch task."
+                                if not has_research_results
+                                else "some research-plan dimensions are still pending. "
+                                "Delegate focused follow-up tasks for them."
+                            )
+                        ),
+                        name="research_validation",
+                        tool_call_id="research_validation"
+                    )
+                ]
+            }
+        )
+
     # Exit if any termination condition is met
     if exceeded_allowed_iterations or no_tool_calls or research_complete_tool_call:
         return Command(
@@ -262,6 +320,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     # Step 2: Process all tool calls together (both think_tool and ConductResearch)
     all_tool_messages = []
     update_payload = {"supervisor_messages": []}
+    plan = {item["id"]: item for item in state.get("research_plan", [])}
     
     # Handle think_tool calls (strategic reflection)
     think_tool_calls = [
@@ -288,14 +347,33 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             # Limit concurrent research units to prevent resource exhaustion
             allowed_conduct_research_calls = conduct_research_calls[:configurable.max_concurrent_research_units]
             overflow_conduct_research_calls = conduct_research_calls[configurable.max_concurrent_research_units:]
+            for index, tool_call in enumerate(allowed_conduct_research_calls):
+                args = tool_call["args"]
+                dimension_id = args.get("dimension_id") or f"dimension-{len(plan) + index + 1:03}"
+                args["dimension_id"] = dimension_id
+                plan[dimension_id] = {
+                    "id": dimension_id,
+                    "requirement": args["research_topic"],
+                    "evidence_requirements": args["evidence_requirements"],
+                    "queries": args.get("search_queries", []),
+                    "status": "pending",
+                    "source_ids": [],
+                }
             
             # Execute research tasks in parallel
             research_tasks = [
                 researcher_subgraph.ainvoke({
                     "researcher_messages": [
-                        HumanMessage(content=tool_call["args"]["research_topic"])
+                        HumanMessage(content=(
+                            f"Research dimension {tool_call['args'].get('dimension_id', '')}:\n"
+                            f"{tool_call['args']['research_topic']}\n"
+                            f"Evidence requirements: {tool_call['args']['evidence_requirements']}\n"
+                            f"Targeted search queries: {tool_call['args'].get('search_queries', [])}"
+                        ))
                     ],
-                    "research_topic": tool_call["args"]["research_topic"]
+                    "research_topic": tool_call["args"]["research_topic"],
+                    "research_dimension_id": tool_call["args"].get("dimension_id", ""),
+                    "evidence_requirements": tool_call["args"]["evidence_requirements"],
                 }, config) 
                 for tool_call in allowed_conduct_research_calls
             ]
@@ -304,8 +382,30 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             
             # Create tool messages with research results
             for observation, tool_call in zip(tool_results, allowed_conduct_research_calls):
+                dimension_id = observation.get(
+                    "research_dimension_id",
+                    tool_call["args"].get("dimension_id", ""),
+                )
+                raw_notes = "\n".join(observation.get("raw_notes", []))
+                if dimension_id in plan:
+                    source_ids = sorted(
+                        set(re.findall(r"\[?(S[0-9a-f]{6})\]?", raw_notes))
+                    )
+                    plan[dimension_id]["status"] = (
+                        "covered"
+                        if _has_requirement_evidence(
+                            plan[dimension_id]["evidence_requirements"],
+                            raw_notes,
+                            source_ids,
+                        )
+                        else "pending"
+                    )
+                    plan[dimension_id]["source_ids"] = source_ids
                 all_tool_messages.append(ToolMessage(
-                    content=observation.get("compressed_research", "Error synthesizing research report: Maximum retries exceeded"),
+                    content=(
+                        f"Research dimension {dimension_id} result:\n"
+                        f"{observation.get('compressed_research', 'Error synthesizing research report: Maximum retries exceeded')}"
+                    ),
                     name=tool_call["name"],
                     tool_call_id=tool_call["id"]
                 ))
@@ -341,6 +441,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     
     # Step 3: Return command with all tool results
     update_payload["supervisor_messages"] = all_tool_messages
+    update_payload["research_plan"] = list(plan.values())
     return Command(
         goto="supervisor",
         update=update_payload
@@ -527,7 +628,19 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     researcher_messages = state.get("researcher_messages", [])
     
     # Add instruction to switch from research mode to compression mode
-    researcher_messages.append(HumanMessage(content=compress_research_simple_human_message))
+    requirements = state.get("evidence_requirements", [])
+    evidence_checklist = "\n".join(
+        f"{index}. {requirement}"
+        for index, requirement in enumerate(requirements, start=1)
+    )
+    researcher_messages.append(HumanMessage(content=(
+        f"{compress_research_simple_human_message}\n\n"
+        "Return one block for every requirement using exactly this format:\n"
+        "Requirement 1: <requirement>\n"
+        "Evidence: <source-backed evidence or unavailable>\n"
+        "Sources: [Sxxxxxx]\n\n"
+        f"Evidence requirements:\n{evidence_checklist}"
+    )))
     
     # Step 3: Attempt compression with retry logic for token limit issues
     synthesis_attempts = 0
@@ -551,7 +664,8 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
             # Return successful compression result
             return {
                 "compressed_research": str(response.content),
-                "raw_notes": [raw_notes_content]
+                "raw_notes": [raw_notes_content],
+                "research_dimension_id": state.get("research_dimension_id", ""),
             }
             
         except Exception as e:
@@ -573,7 +687,8 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     
     return {
         "compressed_research": "Error synthesizing research report: Maximum retries exceeded",
-        "raw_notes": [raw_notes_content]
+        "raw_notes": [raw_notes_content],
+        "research_dimension_id": state.get("research_dimension_id", ""),
     }
 
 # Researcher Subgraph Construction
@@ -635,6 +750,12 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 research_brief=state.get("research_brief", ""),
                 messages=get_buffer_string(state.get("messages", [])),
                 findings=findings,
+                research_plan="\n".join(
+                    f"- {item['id']}: {item['requirement']} "
+                    f"(evidence requirements: {item['evidence_requirements']}; "
+                    f"status: {item['status']}, sources: {', '.join(item['source_ids']) or 'none'})"
+                    for item in state.get("research_plan", [])
+                ),
                 date=get_today_str()
             )
             

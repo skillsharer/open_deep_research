@@ -100,11 +100,29 @@ Ollama's default local endpoint is `http://localhost:11434`, so no Ollama API ke
 
 Open Deep Research searches the web through a self-hosted SearXNG instance and has full MCP compatibility. See the `search_api` and `mcp_config` fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
 
-Configure [SearXNG](https://docs.searxng.org/admin/installation.html) and expose its HTTP endpoint. Set `SEARXNG_URL` in `.env` to the instance base URL (for example, `http://localhost:8080`) (`./run.sh` does this for you). SearXNG's JSON format must be enabled on the instance. Search results are opened and their article text is extracted with [Trafilatura](https://trafilatura.readthedocs.io/en/latest/); fetch or extraction failures are reported rather than replaced with snippets. Pages are fetched with an identifying `OpenDeepResearchLocal` User-Agent; if a site answers 401/402/403/429, the Internet Archive snapshot of that page is used instead and marked as an archived copy in the source text. Optional settings: `SEARXNG_MAX_RESULTS` (pages per query, default 5) and `SEARXNG_LANGUAGES` (comma-separated language codes, each query runs once per language). No search API key is required.
+Configure [SearXNG](https://docs.searxng.org/admin/installation.html) and expose its HTTP endpoint. Set `SEARXNG_URL` in `.env` to the instance base URL (for example, `http://localhost:8080`) (`./run.sh` does this for you). SearXNG's JSON format must be enabled on the instance. Search results are opened and their article text is extracted with [Trafilatura](https://trafilatura.readthedocs.io/en/latest/); relevant passages are selected with the local Ollama embedding model configured by `EMBEDDING_MODEL`. Fetch or extraction failures are reported rather than replaced with snippets. Pages are fetched with an identifying `OpenDeepResearchLocal` User-Agent; if a site answers 401/402/403/429, the Internet Archive snapshot of that page is used instead and marked as an archived copy in the source text. Optional settings: `SEARXNG_MAX_RESULTS` (pages per query, default 10), `SEARXNG_MAX_PASSAGES` (relevant passages per page, default 3), `SEARXNG_LANGUAGES` (comma-separated language codes, each query runs once per language) and `RESEARCH_RUN_DIR` (failed-run artifacts, default `.research-runs`). No search API key is required.
+
+The launcher pulls `nomic-embed-text` for local passage selection. Failed searches retain fetched source artifacts under `.research-runs/<run-id>/`; successful searches clean up their temporary run directory.
 
 Run the optional live checks separately with `uv run pytest -m live tests/test_live_search.py -k searxng` and `uv run pytest -m live tests/test_live_search.py -k trafilatura`. The SearXNG test requires the configured instance to be running; the Trafilatura test fetches a public webpage.
 
 The end-to-end research-quality test (`uv run pytest -m live tests/test_live_research.py`, about 3 minutes per question, 4 questions defined in `CASES`; add your own question with the facts a good report must contain) runs a full research per question with SearXNG and Ollama running (start them with `./run.sh`) and checks that the report contains the expected facts, that citations are sequential and resolve to a source, and that every cited URL was actually retrieved.
+
+For a fixed benchmark run, generate reports from the first three existing DeepResearch Bench prompts and score them against the reference report dimensions:
+
+```bash
+uv run python tests/run_benchmark.py --limit 3
+uv run python tests/evaluate_benchmark.py
+```
+
+The scorer reports dimension coverage, citation structure and report length. The inputs and rubric dimensions are fixed; the web and model outputs remain variable by design.
+To start Ollama and SearXNG, run the same benchmark, and stop the services automatically when it finishes, use:
+
+```bash
+./run.sh benchmark
+```
+
+Set `BENCHMARK_LIMIT` to change the number of fixed cases.
 
 #### Other 
 

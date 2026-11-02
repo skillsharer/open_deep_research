@@ -1,7 +1,7 @@
 """Graph state definitions and data structures for the Deep Research agent."""
 
 import operator
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from langchain_core.messages import MessageLikeRepresentation
 from langgraph.graph import MessagesState
@@ -14,8 +14,18 @@ from typing_extensions import TypedDict
 ###################
 class ConductResearch(BaseModel):
     """Call this tool to conduct research on a specific topic."""
+    dimension_id: str = Field(
+        description="Stable ID of the research-plan dimension this task covers, such as dimension-001.",
+    )
     research_topic: str = Field(
         description="The topic to research. Should be a single topic, and should be described in high detail (at least a paragraph).",
+    )
+    evidence_requirements: list[str] = Field(
+        description="Atomic facts this task must establish, one requirement per item.",
+    )
+    search_queries: list[str] = Field(
+        default_factory=list,
+        description="Targeted search queries for this dimension.",
     )
 
 class ResearchComplete(BaseModel):
@@ -52,6 +62,14 @@ class ResearchQuestion(BaseModel):
 # State Definitions
 ###################
 
+class ResearchPlanItem(TypedDict):
+    id: str
+    requirement: str
+    evidence_requirements: list[str]
+    queries: list[str]
+    status: Literal["pending", "covered", "unavailable"]
+    source_ids: list[str]
+
 def override_reducer(current_value, new_value):
     """Reducer function that allows overriding values in state."""
     if isinstance(new_value, dict) and new_value.get("type") == "override":
@@ -69,6 +87,7 @@ class AgentState(MessagesState):
     research_brief: Optional[str]
     raw_notes: Annotated[list[str], override_reducer] = []
     notes: Annotated[list[str], override_reducer] = []
+    research_plan: Annotated[list[ResearchPlanItem], override_reducer] = []
     final_report: str
 
 class SupervisorState(TypedDict):
@@ -79,6 +98,7 @@ class SupervisorState(TypedDict):
     notes: Annotated[list[str], override_reducer] = []
     research_iterations: int = 0
     raw_notes: Annotated[list[str], override_reducer] = []
+    research_plan: Annotated[list[ResearchPlanItem], override_reducer] = []
 
 class ResearcherState(TypedDict):
     """State for individual researchers conducting research."""
@@ -86,6 +106,8 @@ class ResearcherState(TypedDict):
     researcher_messages: Annotated[list[MessageLikeRepresentation], operator.add]
     tool_call_iterations: int = 0
     research_topic: str
+    research_dimension_id: str
+    evidence_requirements: list[str]
     compressed_research: str
     raw_notes: Annotated[list[str], override_reducer] = []
 
@@ -93,4 +115,5 @@ class ResearcherOutputState(BaseModel):
     """Output state from individual researchers."""
     
     compressed_research: str
+    research_dimension_id: str
     raw_notes: Annotated[list[str], override_reducer] = []

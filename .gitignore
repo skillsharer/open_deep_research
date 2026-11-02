@@ -65,5 +65,7 @@ node_modules/
 # Temporary files
 tmp/
 temp/
+.research-runs/
+tests/expt_results/local_benchmark.jsonl
 
 .langgraph_api

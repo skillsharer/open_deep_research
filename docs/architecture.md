@@ -42,6 +42,8 @@ flowchart TB
         GAT["get_all_tools()"]
         GST["get_search_tool()"]
         SX["searxng_search() - SEARXNG_LANGUAGES, SEARXNG_MAX_RESULTS, source IDs"]
+        SP["select_passages() - Ollama embedding-ranked overlapping passages"]
+        RA["write_run_artifact() / write_run_manifest() - atomic failed-run recovery files"]
         FH["fetch_html() - archive fallback on 401/402/403/429"]
         TT["think_tool()"]
         MCP["load_mcp_tools() / get_tokens() / set_tokens() (optional MCP + Supabase)"]
@@ -61,6 +63,7 @@ flowchart TB
         OLL[("Ollama :11434 (gemma4)")]
         WEB[("Target web pages")]
         IA[("Internet Archive (Wayback)")]
+        TMP[(".research-runs/<run-id>")]
     end
 
     RUN --> UI
@@ -71,8 +74,14 @@ flowchart TB
     GAT --> TT
     GAT --> MCP
     SX -- "queries (sequential, 2s apart)" --> SXNG
+    SP --> EMB
     SX --> FH
     FH -- "fetch + trafilatura extract" --> WEB
+    FH --> SP
+    SP -- "selected content + metadata" --> SX
+    EMB[(Ollama embedding model)]
+    SX --> RA
+    RA --> TMP
     FH -- "if blocked" --> IA
     C & B & S & R & CR & F -- "init_chat_model" --> OLL
     ST --> GN
@@ -86,7 +95,7 @@ flowchart TB
 1. [run.sh](../run.sh) starts SearXNG and Ollama, sets env vars, and runs [app.py](../app.py).
 2. [`run_turn`](../app.py) streams the graph; [`research`](../app.py) maps node names to the phases Clarify, Brief, Research, Report.
 3. [`clarify_with_user`](../src/open_deep_research/deep_researcher.py) may ask a question, otherwise [`write_research_brief`](../src/open_deep_research/deep_researcher.py) creates the brief.
-4. [`supervisor`](../src/open_deep_research/deep_researcher.py) plans topics; [`supervisor_tools`](../src/open_deep_research/deep_researcher.py) runs a researcher subgraph per `ConductResearch` call.
+4. [`supervisor`](../src/open_deep_research/deep_researcher.py) plans topics; the typed research plan tracks each dimension, targeted queries, status and source IDs while [`supervisor_tools`](../src/open_deep_research/deep_researcher.py) runs a researcher subgraph per `ConductResearch` call.
 5. [`researcher`](../src/open_deep_research/deep_researcher.py) calls [`searxng_search`](../src/open_deep_research/utils.py) and `think_tool`; [`compress_research`](../src/open_deep_research/deep_researcher.py) returns a note that cites sources by ID (`[S3f9a1c]`).
 6. [`final_report_generation`](../src/open_deep_research/deep_researcher.py) writes the report with source IDs, then [`finalize_citations`](../src/open_deep_research/utils.py) numbers them by first appearance and builds the Sources list from the retrieved metadata (unknown IDs are dropped).
 

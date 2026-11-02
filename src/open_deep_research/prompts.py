@@ -95,9 +95,11 @@ You have access to three main tools:
 <Instructions>
 Think like a research manager with limited time and resources. Follow these steps:
 
-1. **Read the question carefully** - What specific information does the user need?
-2. **Decide how to delegate the research** - Carefully consider the question and decide how to delegate the research. Are there multiple independent directions that can be explored simultaneously?
-3. **After each call to ConductResearch, pause and assess** - Do I have enough to answer? What's still missing?
+1. **Read the question carefully** - Extract every distinct deliverable, constraint, comparison item, entity, time period, and requested fact. Treat these as a generic coverage checklist; do not assume a fixed topic structure.
+2. **Plan one focused research task per independent checklist item** - Each task must state the exact information it must establish and include targeted search directions or query wording for that item. Do not rely only on a broad version of the user's question.
+   Include a short list of atomic evidence requirements in every ConductResearch call.
+3. **After each call to ConductResearch, update the checklist** - Mark an item covered only when the findings contain source-backed evidence for it. If an item is missing, delegate a targeted follow-up for that item instead of repeating a broad search.
+4. **Complete only after coverage review** - Call ResearchComplete only when every checklist item has evidence or has been explicitly reported as unavailable after a targeted search.
 </Instructions>
 
 <Hard Limits>
@@ -111,13 +113,14 @@ Think like a research manager with limited time and resources. Follow these step
 
 <Show Your Thinking>
 Before you call ConductResearch tool call, use think_tool to plan your approach:
-- Can the task be broken down into smaller sub-tasks?
+- What are all the distinct checklist items in the brief?
+- What targeted query directions will cover each item?
 
 After each ConductResearch tool call, use think_tool to analyze the results:
 - What key information did I find?
-- What's missing?
-- Do I have enough to answer the question comprehensively?
-- Should I delegate more research or call ResearchComplete?
+- Which checklist items now have source-backed evidence?
+- Which items are still missing, and what targeted query should address each one?
+- Should I delegate a focused follow-up or call ResearchComplete?
 </Show Your Thinking>
 
 <Scaling Rules>
@@ -132,6 +135,7 @@ After each ConductResearch tool call, use think_tool to analyze the results:
 - Each ConductResearch call spawns a dedicated research agent for that specific topic
 - A separate agent will write the final report - you just need to gather information
 - When calling ConductResearch, provide complete standalone instructions - sub-agents can't see other agents' work
+- Every delegated task must identify the checklist item it covers and the specific facts or sub-questions it must answer.
 - Do NOT use acronyms or abbreviations in your research questions, be very clear and specific
 </Scaling Rules>"""
 
@@ -243,12 +247,18 @@ Here are the findings from the research that you conducted:
 {findings}
 </Findings>
 
+<Coverage Plan>
+{research_plan}
+</Coverage Plan>
+
 Please create a detailed answer to the overall research brief that:
 1. Is well-organized with proper headings (# for title, ## for sections, ### for subsections)
 2. Includes specific facts and insights from the research
 3. Cite source-backed claims inline with source IDs such as [S3f9a1c]. Only cite IDs present in the research findings; never invent citations.
 4. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the overall research question. People are using you for deep research and will expect detailed, comprehensive answers.
 5. Does not include a Sources section (it is added automatically)
+6. Covers every research-plan dimension above. For dimensions marked unavailable, state that
+   the information could not be verified rather than inventing an answer.
 
 You can structure your report in a number of different ways. Here are some examples:
 
