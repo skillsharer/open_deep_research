@@ -11,9 +11,6 @@ from pydantic import BaseModel, Field
 class SearchAPI(Enum):
     """Enumeration of available search API providers."""
     
-    ANTHROPIC = "anthropic"
-    OPENAI = "openai"
-    TAVILY = "tavily"
     SEARXNG = "searxng"
     NONE = "none"
 
@@ -77,17 +74,14 @@ class Configuration(BaseModel):
     )
     # Research Configuration
     search_api: SearchAPI = Field(
-        default=SearchAPI.TAVILY,
+        default=SearchAPI.SEARXNG,
         metadata={
             "x_oap_ui_config": {
                 "type": "select",
-                "default": "tavily",
-                "description": "Search API to use for research. NOTE: Make sure your Researcher Model supports the selected search API.",
+                "default": "searxng",
+                "description": "Search API to use for research.",
                 "options": [
-                    {"label": "Tavily", "value": SearchAPI.TAVILY.value},
                     {"label": "SearXNG", "value": SearchAPI.SEARXNG.value},
-                    {"label": "OpenAI Native Web Search", "value": SearchAPI.OPENAI.value},
-                    {"label": "Anthropic Native Web Search", "value": SearchAPI.ANTHROPIC.value},
                     {"label": "None", "value": SearchAPI.NONE.value}
                 ]
             }
@@ -121,12 +115,12 @@ class Configuration(BaseModel):
     )
     # Model Configuration
     summarization_model: str = Field(
-        default="openai:gpt-4.1-mini",
+        default="ollama:gemma4:latest",
         metadata={
             "x_oap_ui_config": {
                 "type": "text",
-                "default": "openai:gpt-4.1-mini",
-                "description": "Model for summarizing research results from Tavily search results"
+                "default": "ollama:gemma4:latest",
+                "description": "Model for summarizing research results from search results"
             }
         }
     )
@@ -153,11 +147,11 @@ class Configuration(BaseModel):
         }
     )
     research_model: str = Field(
-        default="openai:gpt-4.1",
+        default="ollama:gemma4:latest",
         metadata={
             "x_oap_ui_config": {
                 "type": "text",
-                "default": "openai:gpt-4.1",
+                "default": "ollama:gemma4:latest",
                 "description": "Model for conducting research. NOTE: Make sure your Researcher Model supports the selected search API."
             }
         }
@@ -173,11 +167,11 @@ class Configuration(BaseModel):
         }
     )
     compression_model: str = Field(
-        default="openai:gpt-4.1",
+        default="ollama:gemma4:latest",
         metadata={
             "x_oap_ui_config": {
                 "type": "text",
-                "default": "openai:gpt-4.1",
+                "default": "ollama:gemma4:latest",
                 "description": "Model for compressing research findings from sub-agents. NOTE: Make sure your Compression Model supports the selected search API."
             }
         }
@@ -193,11 +187,11 @@ class Configuration(BaseModel):
         }
     )
     final_report_model: str = Field(
-        default="openai:gpt-4.1",
+        default="ollama:gemma4:latest",
         metadata={
             "x_oap_ui_config": {
                 "type": "text",
-                "default": "openai:gpt-4.1",
+                "default": "ollama:gemma4:latest",
                 "description": "Model for writing the final report from all research findings"
             }
         }

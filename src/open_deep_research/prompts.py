@@ -207,16 +207,13 @@ Only these fully comprehensive cleaned findings are going to be returned to the 
 The report should be structured like this:
 **List of Queries and Tool Calls Made**
 **Fully Comprehensive Findings**
-**List of All Relevant Sources (with citations in the report)**
+**List of All Source IDs Used (ID and title)**
 </Output Format>
 
 <Citation Rules>
-- Assign each unique URL a single citation number in your text
-- End with ### Sources that lists each source with corresponding numbers
-- IMPORTANT: Number sources sequentially without gaps (1,2,3,4...) in the final list regardless of which sources you choose
-- Example format:
-  [1] Source Title: URL
-  [2] Source Title: URL
+- Every source in the search results has an ID in its header, like "--- SOURCE [S3f9a1c]: Title ---". Cite claims with that exact ID in brackets, e.g. [S3f9a1c], right after each claim.
+- Never write URLs, numbers or a Sources list yourself, and never invent IDs; only use IDs that appear in the search results.
+- Keep each ID attached to the facts it supports.
 </Citation Rules>
 
 Critical Reminder: It is extremely important that any information that is even remotely relevant to the user's research topic is preserved verbatim (e.g. don't rewrite it, don't summarize it, don't paraphrase it).
@@ -249,9 +246,9 @@ Here are the findings from the research that you conducted:
 Please create a detailed answer to the overall research brief that:
 1. Is well-organized with proper headings (# for title, ## for sections, ### for subsections)
 2. Includes specific facts and insights from the research
-3. Cite source-backed claims inline with numbered references such as [1], [2]. Only cite URLs present in the research findings; never invent citations.
+3. Cite source-backed claims inline with source IDs such as [S3f9a1c]. Only cite IDs present in the research findings; never invent citations.
 4. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the overall research question. People are using you for deep research and will expect detailed, comprehensive answers.
-5. Includes a "Sources" section at the end with all referenced links
+5. Does not include a Sources section (it is added automatically)
 
 You can structure your report in a number of different ways. Here are some examples:
 
@@ -303,16 +300,9 @@ Sources marked "SOURCE UNAVAILABLE" could not be read: never use them as evidenc
 </No Sources Rule>
 
 <Citation Rules>
-- Assign each unique URL a single citation number in your text
-- End with ### Sources that lists each source with corresponding numbers
-- IMPORTANT: Number sources sequentially without gaps (1,2,3,4...) in the final list regardless of which sources you choose
-- Each source should be a separate line item in a list, so that in markdown it is rendered as a list.
-- Include every URL present in the research findings in the Sources list, and ensure every numbered inline citation resolves to a matching source entry.
-- Include each available source author and publication date in its Sources entry. Do not invent missing metadata.
-- Example format:
-  [1] Source Title: URL
-  [2] Source Title: URL
-- Citations are extremely important. Make sure to include these, and pay a lot of attention to getting these right. Users will often use these citations to look into more information.
+- Cite source-backed claims inline with the source IDs from the findings, exactly as written, e.g. [S3f9a1c]. Use several IDs like [S3f9a1c][S81b2de] if needed.
+- Never write URLs, numbers or a Sources section yourself, and never invent IDs; only cite IDs present in the findings. Numbering and the Sources list are generated automatically afterwards.
+- Citations are extremely important: only cite a source for claims its content actually supports.
 </Citation Rules>
 """
 

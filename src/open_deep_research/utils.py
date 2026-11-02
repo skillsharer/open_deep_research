@@ -1,26 +1,24 @@
 """Utility functions and helpers for the Deep Research agent."""
 
 import asyncio
+import hashlib
 import logging
 import os
+import re
 import warnings
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 import aiohttp
-from langchain.chat_models import init_chat_model
-from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
-    HumanMessage,
     MessageLikeRepresentation,
     filter_messages,
 )
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import (
     BaseTool,
-    InjectedToolArg,
     StructuredTool,
     ToolException,
     tool,
@@ -28,186 +26,45 @@ from langchain_core.tools import (
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.config import get_store
 from mcp import McpError
-from tavily import AsyncTavilyClient
 from trafilatura import extract, extract_metadata
 
 from open_deep_research.configuration import Configuration, SearchAPI
-from open_deep_research.prompts import summarize_webpage_prompt
-from open_deep_research.state import ResearchComplete, Summary
-
-##########################
-# Tavily Search Tool Utils
-##########################
-TAVILY_SEARCH_DESCRIPTION = (
-    "A search engine optimized for comprehensive, accurate, and trusted results. "
-    "Useful for when you need to answer questions about current events."
-)
-@tool(description=TAVILY_SEARCH_DESCRIPTION)
-async def tavily_search(
-    queries: List[str],
-    max_results: Annotated[int, InjectedToolArg] = 5,
-    topic: Annotated[Literal["general", "news", "finance"], InjectedToolArg] = "general",
-    config: RunnableConfig = None
-) -> str:
-    """Fetch and summarize search results from Tavily search API.
-
-    Args:
-        queries: List of search queries to execute
-        max_results: Maximum number of results to return per query
-        topic: Topic filter for search results (general, news, or finance)
-        config: Runtime configuration for API keys and model settings
-
-    Returns:
-        Formatted string containing summarized search results
-    """
-    # Step 1: Execute search queries asynchronously
-    search_results = await tavily_search_async(
-        queries,
-        max_results=max_results,
-        topic=topic,
-        include_raw_content=True,
-        config=config
-    )
-    
-    # Step 2: Deduplicate results by URL to avoid processing the same content multiple times
-    unique_results = {}
-    for response in search_results:
-        for result in response['results']:
-            url = result['url']
-            if url not in unique_results:
-                unique_results[url] = {**result, "query": response['query']}
-    
-    # Step 3: Set up the summarization model with configuration
-    configurable = Configuration.from_runnable_config(config)
-    
-    # Character limit to stay within model token limits (configurable)
-    max_char_to_include = configurable.max_content_length
-    
-    # Initialize summarization model with retry logic
-    summarization_limit_param = "num_predict" if configurable.summarization_model.startswith("ollama:") else "max_tokens"
-    summarization_model = init_chat_model(
-        model=configurable.summarization_model,
-        **{
-            summarization_limit_param: configurable.summarization_model_max_tokens,
-            "api_key": get_api_key_for_model(configurable.summarization_model, config),
-            "tags": ["langsmith:nostream"],
-        },
-    ).with_structured_output(Summary).with_retry(
-        stop_after_attempt=configurable.max_structured_output_retries
-    )
-    
-    # Step 4: Create summarization tasks (skip empty content)
-    async def noop():
-        """No-op function for results without raw content."""
-        return None
-    
-    summarization_tasks = [
-        noop() if not result.get("raw_content") 
-        else summarize_webpage(
-            summarization_model, 
-            result['raw_content'][:max_char_to_include]
-        )
-        for result in unique_results.values()
-    ]
-    
-    # Step 5: Execute all summarization tasks in parallel
-    summaries = await asyncio.gather(*summarization_tasks)
-    
-    # Step 6: Combine results with their summaries
-    summarized_results = {
-        url: {
-            'title': result['title'], 
-            'content': result['content'] if summary is None else summary
-        }
-        for url, result, summary in zip(
-            unique_results.keys(), 
-            unique_results.values(), 
-            summaries
-        )
-    }
-    
-    # Step 7: Format the final output
-    if not summarized_results:
-        return "No valid search results found. Please try different search queries or use a different search API."
-    
-    formatted_output = "Search results: \n\n"
-    for i, (url, result) in enumerate(summarized_results.items()):
-        formatted_output += f"\n\n--- SOURCE {i+1}: {result['title']} ---\n"
-        formatted_output += f"URL: {url}\n\n"
-        formatted_output += f"SUMMARY:\n{result['content']}\n\n"
-        formatted_output += "\n\n" + "-" * 80 + "\n"
-    
-    return formatted_output
-
-async def tavily_search_async(
-    search_queries, 
-    max_results: int = 5, 
-    topic: Literal["general", "news", "finance"] = "general", 
-    include_raw_content: bool = True, 
-    config: RunnableConfig = None
-):
-    """Execute multiple Tavily search queries asynchronously.
-    
-    Args:
-        search_queries: List of search query strings to execute
-        max_results: Maximum number of results per query
-        topic: Topic category for filtering results
-        include_raw_content: Whether to include full webpage content
-        config: Runtime configuration for API key access
-        
-    Returns:
-        List of search result dictionaries from Tavily API
-    """
-    # Initialize the Tavily client with API key from config
-    tavily_client = AsyncTavilyClient(api_key=get_tavily_api_key(config))
-    
-    # Create search tasks for parallel execution
-    search_tasks = [
-        tavily_client.search(
-            query,
-            max_results=max_results,
-            include_raw_content=include_raw_content,
-            topic=topic
-        )
-        for query in search_queries
-    ]
-    
-    # Execute all search queries in parallel and return results
-    search_results = await asyncio.gather(*search_tasks)
-    return search_results
-
+from open_deep_research.state import ResearchComplete
 
 @tool(description="Search the web using a SearXNG instance.")
 async def searxng_search(
     queries: List[str],
-    max_results: Annotated[int, InjectedToolArg] = 5,
 ) -> str:
     """Search SearXNG, fetch matching pages, and return source-linked content."""
     base_url = os.getenv("SEARXNG_URL", "").rstrip("/")
     if not base_url:
         raise ValueError("SEARXNG_URL must be set when search_api is 'searxng'.")
 
+    max_results = int(os.getenv("SEARXNG_MAX_RESULTS", "5"))
+    languages = [lang.strip() for lang in os.getenv("SEARXNG_LANGUAGES", "all").split(",") if lang.strip()]
+
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "OpenDeepResearchLocal/1.0 (+https://github.com/langchain-ai/open_deep_research)",
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9",
     }
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async def search(query: str) -> dict[str, Any]:
-            params = urlencode({"q": query, "format": "json"})
+        async def search(query: str, language: str) -> dict[str, Any]:
+            params = urlencode({"q": query, "format": "json", "language": language})
             async with session.get(f"{base_url}/search?{params}") as response:
                 response.raise_for_status()
                 return await response.json()
 
+        searches = [(query, language) for query in queries for language in languages]
         results = []
-        for index, query in enumerate(queries):
+        for index, (query, language) in enumerate(searches):
             if index:
                 await asyncio.sleep(2)  # avoid tripping upstream engine rate limits
-            results.append(await search(query))
+            results.append(await search(query, language))
         matches = []
         seen_urls = set()
-        for query, response in zip(queries, results):
+        for (query, _), response in zip(searches, results):
             for result in response.get("results", [])[:max_results]:
                 url = result.get("url")
                 if not url or url in seen_urls:
@@ -215,23 +72,41 @@ async def searxng_search(
                 seen_urls.add(url)
                 matches.append((query, result))
 
+        async def fetch_html(url: str) -> tuple[bytes, str]:
+            """Fetch a page; if the site blocks us, fall back to its Internet Archive snapshot."""
+            try:
+                async with session.get(url, allow_redirects=True) as response:
+                    response.raise_for_status()
+                    if "text/html" not in response.headers.get("Content-Type", ""):
+                        raise ValueError(f"Search result is not an HTML page: {url}")
+                    return await response.read(), ""
+            except aiohttp.ClientResponseError as error:
+                if error.status not in (401, 402, 403, 429):
+                    raise
+                async with session.get("https://archive.org/wayback/available", params={"url": url}) as response:
+                    snapshot = (await response.json()).get("archived_snapshots", {}).get("closest")
+                if not snapshot:
+                    raise
+                stamp = snapshot["timestamp"]
+                async with session.get(f"https://web.archive.org/web/{stamp}id_/{url}") as response:
+                    response.raise_for_status()
+                    note = f"[Archived copy from {stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}; the live site blocks automated access]\n"
+                    return await response.read(), note
+
         async def fetch_page(query: str, result: dict[str, Any]) -> dict[str, str]:
             url = result["url"]
-            async with session.get(url, allow_redirects=True) as response:
-                response.raise_for_status()
-                if "text/html" not in response.headers.get("Content-Type", ""):
-                    raise ValueError(f"Search result is not an HTML page: {url}")
-                html = await response.text()
+            html, note = await fetch_html(url)
             page_text = await asyncio.to_thread(extract, html, url=url)
             if not page_text:
                 raise ValueError(f"Could not extract article text from search result: {url}")
             metadata = await asyncio.to_thread(extract_metadata, html)
             return {
-                "title": metadata.title if metadata and metadata.title else result.get("title") or url,
+                "title": result.get("title") or (metadata.title if metadata and metadata.title else url),
+                "snippet": " ".join((result.get("content") or "").split()),
                 "url": metadata.url if metadata and metadata.url else url,
                 "author": metadata.author if metadata and metadata.author else "",
                 "date": metadata.date if metadata and metadata.date else "",
-                "content": page_text,
+                "content": note + page_text,
             }
 
         pages = await asyncio.gather(
@@ -249,12 +124,14 @@ async def searxng_search(
                 f"Page could not be read ({page}); no content available."
             )
             continue
+        source_id = "S" + hashlib.sha1(page["url"].encode()).hexdigest()[:6]
         formatted.append(
-            f"--- SOURCE: {page['title']} ---\n"
+            f"--- SOURCE [{source_id}]: {page['title']} ---\n"
             f"URL: {page['url']}\n"
             f"Author: {page['author'] or 'Not provided'}\n"
             f"Published: {page['date'] or 'Not provided'}\n"
             f"Query: {query}\n"
+            f"Search snippet: {page['snippet'] or 'Not provided'}\n"
             f"CONTENT:\n{page['content']}"
         )
     if not formatted:
@@ -266,49 +143,32 @@ async def searxng_search(
     return "\n\n".join(formatted)
 
 
-async def summarize_webpage(model: BaseChatModel, webpage_content: str) -> str:
-    """Summarize webpage content using AI model with timeout protection.
-    
-    Args:
-        model: The chat model configured for summarization
-        webpage_content: Raw webpage content to be summarized
-        
-    Returns:
-        Formatted summary with key excerpts, or original content if summarization fails
-    """
-    try:
-        # Create prompt with current date context
-        prompt_content = summarize_webpage_prompt.format(
-            webpage_content=webpage_content, 
-            date=get_today_str()
-        )
-        
-        # Execute summarization with timeout to prevent hanging
-        summary = await asyncio.wait_for(
-            model.ainvoke([HumanMessage(content=prompt_content)]),
-            timeout=60.0  # 60 second timeout for summarization
-        )
-        
-        # Format the summary with structured sections
-        formatted_summary = (
-            f"<summary>\n{summary.summary}\n</summary>\n\n"
-            f"<key_excerpts>\n{summary.key_excerpts}\n</key_excerpts>"
-        )
-        
-        return formatted_summary
-        
-    except asyncio.TimeoutError:
-        # Timeout during summarization - return original content
-        logging.warning("Summarization timed out after 60 seconds, returning original content")
-        return webpage_content
-    except Exception as e:
-        # Other errors during summarization - log and return original content
-        logging.warning(f"Summarization failed with error: {str(e)}, returning original content")
-        return webpage_content
+SOURCE_ID = r"S[0-9a-f]{6}"
 
-##########################
-# Reflection Tool Utils
-##########################
+
+def finalize_citations(report: str, raw_notes: List[str]) -> str:
+    """Number [S...] citations by first appearance and build Sources from retrieval metadata, not model text."""
+    header = rf"--- SOURCE \[({SOURCE_ID})\]: (.*?) ---\nURL: (.*)\nAuthor: (.*)\nPublished: (.*)"
+    registry = {m[0]: m[1:] for m in re.findall(header, "\n".join(raw_notes))}
+    numbers: dict[str, int] = {}
+
+    def renumber(match: re.Match) -> str:
+        ids = [i for i in re.findall(SOURCE_ID, match.group(0)) if i in registry]
+        for i in ids:
+            numbers.setdefault(i, len(numbers) + 1)
+        return "".join(f"[{numbers[i]}]" for i in ids)
+
+    body = re.split(r"\n#+\s*Sources\b", report)[0]
+    body = re.sub(rf"\[{SOURCE_ID}(?:\s*[,;]\s*{SOURCE_ID})*\]", renumber, body)
+    if not numbers:
+        return body
+    lines = []
+    for source_id, number in numbers.items():
+        title, url, author, date = registry[source_id]
+        details = ", ".join(x for x in (author, date) if x != "Not provided")
+        lines.append(f"[{number}] {title}: {url}" + (f" ({details})" if details else ""))
+    return body.rstrip() + "\n\n### Sources\n" + "\n".join(lines)
+
 
 @tool(description="Strategic reflection tool for research planning")
 def think_tool(reflection: str) -> str:
@@ -626,34 +486,12 @@ async def get_search_tool(search_api: SearchAPI):
     """Configure and return search tools based on the specified API provider.
     
     Args:
-        search_api: The search API provider to use (Anthropic, OpenAI, Tavily, or None)
+        search_api: The search API provider to use (SearXNG or None)
         
     Returns:
         List of configured search tool objects for the specified provider
     """
-    if search_api == SearchAPI.ANTHROPIC:
-        # Anthropic's native web search with usage limits
-        return [{
-            "type": "web_search_20250305", 
-            "name": "web_search", 
-            "max_uses": 5
-        }]
-        
-    elif search_api == SearchAPI.OPENAI:
-        # OpenAI's web search preview functionality
-        return [{"type": "web_search_preview"}]
-        
-    elif search_api == SearchAPI.TAVILY:
-        # Configure Tavily search tool with metadata
-        search_tool = tavily_search
-        search_tool.metadata = {
-            **(search_tool.metadata or {}), 
-            "type": "search", 
-            "name": "web_search"
-        }
-        return [search_tool]
-
-    elif search_api == SearchAPI.SEARXNG:
+    if search_api == SearchAPI.SEARXNG:
         search_tool = searxng_search
         search_tool.metadata = {
             **(search_tool.metadata or {}),
@@ -661,12 +499,7 @@ async def get_search_tool(search_api: SearchAPI):
             "name": "web_search",
         }
         return [search_tool]
-        
-    elif search_api == SearchAPI.NONE:
-        # No search functionality configured
-        return []
-        
-    # Default fallback for unknown search API types
+
     return []
     
 async def get_all_tools(config: RunnableConfig):
@@ -704,231 +537,24 @@ def get_notes_from_tool_calls(messages: list[MessageLikeRepresentation]):
     return [tool_msg.content for tool_msg in filter_messages(messages, include_types="tool")]
 
 ##########################
-# Model Provider Native Websearch Utils
-##########################
-
-def anthropic_websearch_called(response):
-    """Detect if Anthropic's native web search was used in the response.
-    
-    Args:
-        response: The response object from Anthropic's API
-        
-    Returns:
-        True if web search was called, False otherwise
-    """
-    try:
-        # Navigate through the response metadata structure
-        usage = response.response_metadata.get("usage")
-        if not usage:
-            return False
-        
-        # Check for server-side tool usage information
-        server_tool_use = usage.get("server_tool_use")
-        if not server_tool_use:
-            return False
-        
-        # Look for web search request count
-        web_search_requests = server_tool_use.get("web_search_requests")
-        if web_search_requests is None:
-            return False
-        
-        # Return True if any web search requests were made
-        return web_search_requests > 0
-        
-    except (AttributeError, TypeError):
-        # Handle cases where response structure is unexpected
-        return False
-
-def openai_websearch_called(response):
-    """Detect if OpenAI's web search functionality was used in the response.
-    
-    Args:
-        response: The response object from OpenAI's API
-        
-    Returns:
-        True if web search was called, False otherwise
-    """
-    # Check for tool outputs in the response metadata
-    tool_outputs = response.additional_kwargs.get("tool_outputs")
-    if not tool_outputs:
-        return False
-    
-    # Look for web search calls in the tool outputs
-    for tool_output in tool_outputs:
-        if tool_output.get("type") == "web_search_call":
-            return True
-    
-    return False
-
-
-##########################
 # Token Limit Exceeded Utils
 ##########################
 
 def is_token_limit_exceeded(exception: Exception, model_name: str = None) -> bool:
-    """Determine if an exception indicates a token/context limit was exceeded.
-    
-    Args:
-        exception: The exception to analyze
-        model_name: Optional model name to optimize provider detection
-        
-    Returns:
-        True if the exception indicates a token limit was exceeded, False otherwise
-    """
+    """Determine if an exception indicates a context/token limit was exceeded."""
     error_str = str(exception).lower()
-    
-    # Step 1: Determine provider from model name if available
-    provider = None
-    if model_name:
-        model_str = str(model_name).lower()
-        if model_str.startswith('openai:'):
-            provider = 'openai'
-        elif model_str.startswith('anthropic:'):
-            provider = 'anthropic'
-        elif model_str.startswith('gemini:') or model_str.startswith('google:'):
-            provider = 'gemini'
-    
-    # Step 2: Check provider-specific token limit patterns
-    if provider == 'openai':
-        return _check_openai_token_limit(exception, error_str)
-    elif provider == 'anthropic':
-        return _check_anthropic_token_limit(exception, error_str)
-    elif provider == 'gemini':
-        return _check_gemini_token_limit(exception, error_str)
-    
-    # Step 3: If provider unknown, check all providers
-    return (
-        _check_openai_token_limit(exception, error_str) or
-        _check_anthropic_token_limit(exception, error_str) or
-        _check_gemini_token_limit(exception, error_str)
+    return any(
+        phrase in error_str
+        for phrase in ("context length", "context window", "too many tokens", "maximum context")
     )
-
-def _check_openai_token_limit(exception: Exception, error_str: str) -> bool:
-    """Check if exception indicates OpenAI token limit exceeded."""
-    # Analyze exception metadata
-    exception_type = str(type(exception))
-    class_name = exception.__class__.__name__
-    module_name = getattr(exception.__class__, '__module__', '')
-    
-    # Check if this is an OpenAI exception
-    is_openai_exception = (
-        'openai' in exception_type.lower() or 
-        'openai' in module_name.lower()
-    )
-    
-    # Check for typical OpenAI token limit error types
-    is_request_error = class_name in ['BadRequestError', 'InvalidRequestError']
-    
-    if is_openai_exception and is_request_error:
-        # Look for token-related keywords in error message
-        token_keywords = ['token', 'context', 'length', 'maximum context', 'reduce']
-        if any(keyword in error_str for keyword in token_keywords):
-            return True
-    
-    # Check for specific OpenAI error codes
-    if hasattr(exception, 'code') and hasattr(exception, 'type'):
-        error_code = getattr(exception, 'code', '')
-        error_type = getattr(exception, 'type', '')
-        
-        if (error_code == 'context_length_exceeded' or
-            error_type == 'invalid_request_error'):
-            return True
-    
-    return False
-
-def _check_anthropic_token_limit(exception: Exception, error_str: str) -> bool:
-    """Check if exception indicates Anthropic token limit exceeded."""
-    # Analyze exception metadata
-    exception_type = str(type(exception))
-    class_name = exception.__class__.__name__
-    module_name = getattr(exception.__class__, '__module__', '')
-    
-    # Check if this is an Anthropic exception
-    is_anthropic_exception = (
-        'anthropic' in exception_type.lower() or 
-        'anthropic' in module_name.lower()
-    )
-    
-    # Check for Anthropic-specific error patterns
-    is_bad_request = class_name == 'BadRequestError'
-    
-    if is_anthropic_exception and is_bad_request:
-        # Anthropic uses specific error messages for token limits
-        if 'prompt is too long' in error_str:
-            return True
-    
-    return False
-
-def _check_gemini_token_limit(exception: Exception, error_str: str) -> bool:
-    """Check if exception indicates Google/Gemini token limit exceeded."""
-    # Analyze exception metadata
-    exception_type = str(type(exception))
-    class_name = exception.__class__.__name__
-    module_name = getattr(exception.__class__, '__module__', '')
-    
-    # Check if this is a Google/Gemini exception
-    is_google_exception = (
-        'google' in exception_type.lower() or 
-        'google' in module_name.lower()
-    )
-    
-    # Check for Google-specific resource exhaustion errors
-    is_resource_exhausted = class_name in [
-        'ResourceExhausted', 
-        'GoogleGenerativeAIFetchError'
-    ]
-    
-    if is_google_exception and is_resource_exhausted:
-        return True
-    
-    # Check for specific Google API resource exhaustion patterns
-    if 'google.api_core.exceptions.resourceexhausted' in exception_type.lower():
-        return True
-    
-    return False
 
 # NOTE: This may be out of date or not applicable to your models. Please update this as needed.
 MODEL_TOKEN_LIMITS = {
-    "openai:gpt-4.1-mini": 1047576,
-    "openai:gpt-4.1-nano": 1047576,
-    "openai:gpt-4.1": 1047576,
-    "openai:gpt-4o-mini": 128000,
-    "openai:gpt-4o": 128000,
-    "openai:o4-mini": 200000,
-    "openai:o3-mini": 200000,
-    "openai:o3": 200000,
-    "openai:o3-pro": 200000,
-    "openai:o1": 200000,
-    "openai:o1-pro": 200000,
-    "anthropic:claude-opus-4": 200000,
-    "anthropic:claude-sonnet-4": 200000,
-    "anthropic:claude-3-7-sonnet": 200000,
-    "anthropic:claude-3-5-sonnet": 200000,
-    "anthropic:claude-3-5-haiku": 200000,
-    "google:gemini-1.5-pro": 2097152,
-    "google:gemini-1.5-flash": 1048576,
-    "google:gemini-pro": 32768,
-    "cohere:command-r-plus": 128000,
-    "cohere:command-r": 128000,
-    "cohere:command-light": 4096,
-    "cohere:command": 4096,
-    "mistral:mistral-large": 32768,
-    "mistral:mistral-medium": 32768,
-    "mistral:mistral-small": 32768,
-    "mistral:mistral-7b-instruct": 32768,
     "ollama:codellama": 16384,
     "ollama:llama2:70b": 4096,
     "ollama:llama2:13b": 4096,
     "ollama:llama2": 4096,
     "ollama:mistral": 32768,
-    "bedrock:us.amazon.nova-premier-v1:0": 1000000,
-    "bedrock:us.amazon.nova-pro-v1:0": 300000,
-    "bedrock:us.amazon.nova-lite-v1:0": 300000,
-    "bedrock:us.amazon.nova-micro-v1:0": 128000,
-    "bedrock:us.anthropic.claude-3-7-sonnet-20250219-v1:0": 200000,
-    "bedrock:us.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock:us.anthropic.claude-opus-4-20250514-v1:0": 200000,
-    "anthropic.claude-opus-4-1-20250805-v1:0": 200000,
 }
 
 def get_model_token_limit(model_string):
@@ -991,38 +617,3 @@ def get_config_value(value):
         return value
     else:
         return value.value
-
-def get_api_key_for_model(model_name: str, config: RunnableConfig):
-    """Get API key for a specific model from environment or config."""
-    should_get_from_config = os.getenv("GET_API_KEYS_FROM_CONFIG", "false")
-    model_name = model_name.lower()
-    if should_get_from_config.lower() == "true":
-        api_keys = config.get("configurable", {}).get("apiKeys", {})
-        if not api_keys:
-            return None
-        if model_name.startswith("openai:"):
-            return api_keys.get("OPENAI_API_KEY")
-        elif model_name.startswith("anthropic:"):
-            return api_keys.get("ANTHROPIC_API_KEY")
-        elif model_name.startswith("google"):
-            return api_keys.get("GOOGLE_API_KEY")
-        return None
-    else:
-        if model_name.startswith("openai:"): 
-            return os.getenv("OPENAI_API_KEY")
-        elif model_name.startswith("anthropic:"):
-            return os.getenv("ANTHROPIC_API_KEY")
-        elif model_name.startswith("google"):
-            return os.getenv("GOOGLE_API_KEY")
-        return None
-
-def get_tavily_api_key(config: RunnableConfig):
-    """Get Tavily API key from environment or config."""
-    should_get_from_config = os.getenv("GET_API_KEYS_FROM_CONFIG", "false")
-    if should_get_from_config.lower() == "true":
-        api_keys = config.get("configurable", {}).get("apiKeys", {})
-        if not api_keys:
-            return None
-        return api_keys.get("TAVILY_API_KEY")
-    else:
-        return os.getenv("TAVILY_API_KEY")

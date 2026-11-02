@@ -40,21 +40,19 @@ from open_deep_research.state import (
     SupervisorState,
 )
 from open_deep_research.utils import (
-    anthropic_websearch_called,
     get_all_tools,
-    get_api_key_for_model,
     get_model_token_limit,
+    finalize_citations,
     get_notes_from_tool_calls,
     get_today_str,
     is_token_limit_exceeded,
-    openai_websearch_called,
     remove_up_to_last_ai_message,
     think_tool,
 )
 
 # Initialize a configurable model that we will use throughout the agent
 configurable_model = init_chat_model(
-    configurable_fields=("model", "max_tokens", "num_predict", "api_key"),
+    configurable_fields=("model", "max_tokens", "num_predict"),
 )
 
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
@@ -82,7 +80,6 @@ async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Comman
     model_config = {
         "model": configurable.research_model,
         model_limit_param: configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
         "tags": ["langsmith:nostream"]
     }
     
@@ -136,7 +133,6 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     research_model_config = {
         "model": configurable.research_model,
         researcher_limit_param: configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
         "tags": ["langsmith:nostream"]
     }
     
@@ -197,7 +193,6 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
     research_model_config = {
         "model": configurable.research_model,
         supervisor_limit_param: configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
         "tags": ["langsmith:nostream"]
     }
     
@@ -396,7 +391,6 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     research_model_config = {
         "model": configurable.research_model,
         researcher_limit_param: configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
         "tags": ["langsmith:nostream"]
     }
     
@@ -441,7 +435,7 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     
     This function handles various types of researcher tool calls:
     1. think_tool - Strategic reflection that continues the research conversation
-    2. Search tools (tavily_search, web_search) - Information gathering
+    2. Search tools (searxng_search, web_search) - Information gathering
     3. MCP tools - External tool integrations
     4. ResearchComplete - Signals completion of individual research task
     
@@ -457,14 +451,8 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     researcher_messages = state.get("researcher_messages", [])
     most_recent_message = researcher_messages[-1]
     
-    # Early exit if no tool calls were made (including native web search)
-    has_tool_calls = bool(most_recent_message.tool_calls)
-    has_native_search = (
-        openai_websearch_called(most_recent_message) or 
-        anthropic_websearch_called(most_recent_message)
-    )
-    
-    if not has_tool_calls and not has_native_search:
+    # Early exit if no tool calls were made
+    if not most_recent_message.tool_calls:
         return Command(goto="compress_research")
     
     # Step 2: Handle other tool calls (search, MCP tools, etc.)
@@ -532,7 +520,6 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     synthesizer_model = configurable_model.with_config({
         "model": configurable.compression_model,
         compression_limit_param: configurable.compression_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.compression_model, config),
         "tags": ["langsmith:nostream"]
     })
     
@@ -633,7 +620,6 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
     writer_model_config = {
         "model": configurable.final_report_model,
         writer_limit_param: configurable.final_report_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.final_report_model, config),
         "tags": ["langsmith:nostream"]
     }
     
@@ -657,7 +643,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 HumanMessage(content=final_report_prompt)
             ])
             
-            # Return successful report generation
+            final_report.content = finalize_citations(str(final_report.content), state.get("raw_notes", []))
             return {
                 "final_report": final_report.content, 
                 "messages": [final_report],

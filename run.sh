@@ -61,7 +61,7 @@ docker run -d --rm --name open-deep-research-searxng \
 cleanup() {
     trap - EXIT INT TERM
     docker stop open-deep-research-searxng >/dev/null 2>&1 || true
-    rm -rf .searxng-settings.yml .langgraph_api
+    rm -f .searxng-settings.yml
     if [[ -n "$OLLAMA_PID" ]]; then
         kill "$OLLAMA_PID" 2>/dev/null || true
     fi
@@ -74,6 +74,8 @@ OLLAMA_MODEL="${OLLAMA_MODEL:-ollama:gemma4:latest}"
 OLLAMA_MODEL_NAME="${OLLAMA_MODEL#ollama:}"
 
 export SEARXNG_URL="${SEARXNG_URL:-http://localhost:8080}"
+export LANGSMITH_TRACING=false
+export LANGCHAIN_TRACING_V2=false
 export SEARCH_API="${SEARCH_API:-searxng}"
 export MAX_CONCURRENT_RESEARCH_UNITS="${MAX_CONCURRENT_RESEARCH_UNITS:-1}"
 export SUMMARIZATION_MODEL="${SUMMARIZATION_MODEL:-$OLLAMA_MODEL}"
@@ -85,5 +87,4 @@ if ! ollama list | grep -Fq "$OLLAMA_MODEL_NAME"; then
     ollama pull "$OLLAMA_MODEL_NAME"
 fi
 
-uvx --refresh --from "langgraph-cli[inmem]" --with-editable . --python 3.11 \
-    langgraph dev --config langgraph.local.json --allow-blocking --no-reload
+uv run streamlit run app.py --browser.gatherUsageStats false

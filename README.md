@@ -40,22 +40,13 @@ uv pip install -r pyproject.toml
 cp .env.example .env
 ```
 
-4. Launch agent with the LangGraph server locally:
+4. Launch the local Streamlit UI (no LangSmith/Studio involved):
 
 ```bash
-# Install dependencies and start the local LangGraph server (without deployment auth)
-uvx --refresh --from "langgraph-cli[inmem]" --with-editable . --python 3.11 langgraph dev --config langgraph.local.json --allow-blocking
+uv run streamlit run app.py
 ```
 
-This will open the LangGraph Studio UI in your browser.
-
-```
-- 🚀 API: http://127.0.0.1:2024
-- 🎨 Studio UI: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
-- 📚 API Docs: http://127.0.0.1:2024/docs
-```
-
-Ask a question in the `messages` input field and click `Submit`. Select different configuration in the "Manage Assistants" tab.
+Type your question in the chat box. Clarifying questions from the agent appear in the chat; answer them in the same thread.
 
 To start the free local path with SearXNG and Ollama, install Docker, Ollama, and `uv`, then run:
 
@@ -64,18 +55,18 @@ chmod +x run.sh
 ./run.sh
 ```
 
-The script loads `.env`, starts Ollama if needed, runs SearXNG in Docker, downloads the model specified by `OLLAMA_MODEL` if it is missing, and launches the local LangGraph server configured to use both. The default model is `ollama:gemma4:latest`; change `OLLAMA_MODEL` in `.env` to select another Ollama model. Stop with `Ctrl+C`.
+The script loads `.env`, starts Ollama if needed, runs SearXNG in Docker, downloads the model specified by `OLLAMA_MODEL` if it is missing, and launches the Streamlit UI at http://localhost:8501, configured to use both.
 
 ### ⚙️ Configurations
 
 #### LLM :brain:
 
-Open Deep Research supports a wide range of LLM providers via the [init_chat_model() API](https://python.langchain.com/docs/how_to/chat_models_universal_init/). It uses LLMs for a few different tasks. See the below model fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
+Open Deep Research runs local models through Ollama via the [init_chat_model() API](https://python.langchain.com/docs/how_to/chat_models_universal_init/). It uses LLMs for a few different tasks. See the below model fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
 
-- **Summarization** (default: `openai:gpt-4.1-mini`): Summarizes search API results
-- **Research** (default: `openai:gpt-4.1`): Power the search agent
-- **Compression** (default: `openai:gpt-4.1`): Compresses research findings
-- **Final Report Model** (default: `openai:gpt-4.1`): Write the final report
+- **Summarization** (default: `ollama:gemma4:latest`): Summarizes search API results
+- **Research** (default: `ollama:gemma4:latest`): Power the search agent
+- **Compression** (default: `ollama:gemma4:latest`): Compresses research findings
+- **Final Report Model** (default: `ollama:gemma4:latest`): Write the final report
 
 > Note: the selected model will need to support [structured outputs](https://python.langchain.com/docs/integrations/chat/) and [tool calling](https://python.langchain.com/docs/how_to/tool_calling/).
 
@@ -100,50 +91,24 @@ Open Deep Research can use models served by a local [Ollama](https://ollama.com/
    uv sync
    ```
 
-4. Start the app using the local-development command in the [Quickstart](#-quickstart). It uses `langgraph.local.json`, which omits the deployment's Supabase authentication so local use doesn't require Supabase credentials. In LangGraph Studio, open **Manage Assistants** and set the model fields you want to run locally to `ollama:gpt-oss:20b`:
-   - **Summarization Model**
-   - **Research Model**
-   - **Compression Model**
-   - **Final Report Model**
+4. Start the app with `./run.sh`. It sets the Ollama models through environment variables (`OLLAMA_MODEL` in `.env`); these override the defaults in [configuration.py](./src/open_deep_research/configuration.py).
+   Change the model suffix if you pulled a different model.
 
-   Change the model suffix if you pulled a different model. Set each field separately; any fields left on their defaults still use OpenAI models and need their API key.
-
-Ollama's default local endpoint is `http://localhost:11434`, so no Ollama API key is needed for local use. To avoid external model and search APIs, set all four model fields to Ollama and choose **None** for `search_api`. This disables web search; Tavily search, if selected, requires its API key. To disable LangSmith tracing and its outbound requests too, set `LANGSMITH_TRACING=false` in `.env`.
+Ollama's default local endpoint is `http://localhost:11434`, so no Ollama API key is needed for local use. All four model fields default to Ollama and `search_api` defaults to SearXNG, so no external model or search API is used. To disable LangSmith tracing and its outbound requests too, set `LANGSMITH_TRACING=false` in `.env`.
 
 #### Search API :mag:
 
-Open Deep Research supports a wide range of search tools. By default it uses the [Tavily](https://www.tavily.com/) search API. Has full MCP compatibility and work native web search for Anthropic and OpenAI. See the `search_api` and `mcp_config` fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
+Open Deep Research searches the web through a self-hosted SearXNG instance and has full MCP compatibility. See the `search_api` and `mcp_config` fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
 
-To use a free, self-hosted search engine, configure [SearXNG](https://docs.searxng.org/admin/installation.html) and expose its HTTP endpoint. Set `SEARXNG_URL` in `.env` to the instance base URL (for example, `http://localhost:8080`), then select `searxng` for **Search API** in LangGraph Studio. SearXNG's JSON format must be enabled on the instance. Search results are opened and their article text is extracted with [Trafilatura](https://trafilatura.readthedocs.io/en/latest/); fetch or extraction failures are reported rather than replaced with snippets. No search API key is required; the selected language model still needs its provider credentials. Tavily remains the default.
+Configure [SearXNG](https://docs.searxng.org/admin/installation.html) and expose its HTTP endpoint. Set `SEARXNG_URL` in `.env` to the instance base URL (for example, `http://localhost:8080`) (`./run.sh` does this for you). SearXNG's JSON format must be enabled on the instance. Search results are opened and their article text is extracted with [Trafilatura](https://trafilatura.readthedocs.io/en/latest/); fetch or extraction failures are reported rather than replaced with snippets. Pages are fetched with an identifying `OpenDeepResearchLocal` User-Agent; if a site answers 401/402/403/429, the Internet Archive snapshot of that page is used instead and marked as an archived copy in the source text. Optional settings: `SEARXNG_MAX_RESULTS` (pages per query, default 5) and `SEARXNG_LANGUAGES` (comma-separated language codes, each query runs once per language). No search API key is required.
 
 Run the optional live checks separately with `uv run pytest -m live tests/test_live_search.py -k searxng` and `uv run pytest -m live tests/test_live_search.py -k trafilatura`. The SearXNG test requires the configured instance to be running; the Trafilatura test fetches a public webpage.
+
+The end-to-end research-quality test (`uv run pytest -m live tests/test_live_research.py`, about 3 minutes per question, 4 questions defined in `CASES`; add your own question with the facts a good report must contain) runs a full research per question with SearXNG and Ollama running (start them with `./run.sh`) and checks that the report contains the expected facts, that citations are sequential and resolve to a source, and that every cited URL was actually retrieved.
 
 #### Other 
 
 See the fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) for various other settings to customize the behavior of Open Deep Research. 
-
-### 📊 Evaluation
-
-Open Deep Research is configured for evaluation with [Deep Research Bench](https://huggingface.co/spaces/Ayanami0730/DeepResearch-Leaderboard). This benchmark has 100 PhD-level research tasks (50 English, 50 Chinese), crafted by domain experts across 22 fields (e.g., Science & Tech, Business & Finance) to mirror real-world deep-research needs. It has 2 evaluation metrics, but the leaderboard is based on the RACE score. This uses LLM-as-a-judge (Gemini) to evaluate research reports against a golden set of reports compiled by experts across a set of metrics.
-
-#### Usage
-
-> Warning: Running across the 100 examples can cost ~$20-$100 depending on the model selection.
-
-The dataset is available on [LangSmith via this link](https://smith.langchain.com/public/c5e7a6ad-fdba-478c-88e6-3a388459ce8b/d). To kick off evaluation, run the following command:
-
-```bash
-# Run comprehensive evaluation on LangSmith datasets
-python tests/run_evaluate.py
-```
-
-This will provide a link to a LangSmith experiment, which will have a name `YOUR_EXPERIMENT_NAME`. Once this is done, extract the results to a JSONL file that can be submitted to the Deep Research Bench.
-
-```bash
-python tests/extract_langsmith_data.py --project-name "YOUR_EXPERIMENT_NAME" --model-name "you-model-name" --dataset-name "deep_research_bench"
-```
-
-This creates `tests/expt_results/deep_research_bench_model-name.jsonl` with the required format. Move the generated JSONL file to a local clone of the Deep Research Bench repository and follow their [Quick Start guide](https://github.com/Ayanami0730/deep_research_bench?tab=readme-ov-file#quick-start) for evaluation submission.
 
 #### Results 
 
@@ -155,10 +120,6 @@ This creates `tests/expt_results/deep_research_bench_model-name.jsonl` with the 
 | Deep Research Bench Submission | [c0a160b](https://github.com/langchain-ai/open_deep_research/commit/c0a160b57a9b5ecd4b8217c3811a14d8eff97f72) | openai:gpt-4.1-nano | openai:gpt-4.1 | openai:gpt-4.1 | $87.83 | 207,005,549 | 0.4344 | [Link](https://smith.langchain.com/o/ebbaf2eb-769b-4505-aca2-d11de10372a4/datasets/6e4766ca-6[…]ons=e6647f74-ad2f-4cb9-887e-acb38b5f73c0&baseline=undefined) |
 
 ### 🚀 Deployments and Usage
-
-#### LangGraph Studio
-
-Follow the [quickstart](#-quickstart) to start LangGraph server locally and test the agent out on LangGraph Studio.
 
 #### Hosted deployment
  
