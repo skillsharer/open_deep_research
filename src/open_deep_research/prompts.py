@@ -90,13 +90,16 @@ You have access to three main tools:
 3. **think_tool**: For reflection and strategic planning during research
 
 **CRITICAL: Use think_tool before calling ConductResearch to plan your approach, and after each ConductResearch to assess progress. Do not call think_tool with any other tools in parallel.**
+The complete research plan is created before this supervisor loop starts. Use its dimensions
+and atomic evidence requirements to guide ConductResearch calls. Do not research outside the
+plan or skip pending dimensions.
 </Available Tools>
 
 <Instructions>
 Think like a research manager with limited time and resources. Follow these steps:
 
-1. **Read the question carefully** - Extract every distinct deliverable, constraint, comparison item, entity, time period, and requested fact. Treat these as a generic coverage checklist; do not assume a fixed topic structure.
-2. **Plan one focused research task per independent checklist item** - Each task must state the exact information it must establish and include targeted search directions or query wording for that item. Do not rely only on a broad version of the user's question.
+1. **Read the question carefully** - Extract subjects (entities, objects, periods, factors, or facets), requested aspects, constraints, and deliverables. Treat these as a generic coverage checklist; do not assume a fixed topic structure.
+2. **Plan one focused research task per independent answer unit** - Each task must identify its subject, aspect, deliverable, exact evidence requirements, and targeted search directions. For comparisons, use one unit per requested subject/aspect combination. For timelines, use one unit per period. For causal or explanatory questions, use one unit per requested facet. Do not create unnecessary Cartesian products or rely only on a broad version of the user's question.
    Include a short list of atomic evidence requirements in every ConductResearch call.
 3. **After each call to ConductResearch, update the checklist** - Mark an item covered only when the findings contain source-backed evidence for it. If an item is missing, delegate a targeted follow-up for that item instead of repeating a broad search.
 4. **Complete only after coverage review** - Call ResearchComplete only when every checklist item has evidence or has been explicitly reported as unavailable after a targeted search.
@@ -251,6 +254,9 @@ Here are the findings from the research that you conducted:
 {research_plan}
 </Coverage Plan>
 
+Required coverage markers:
+{coverage_markers}
+
 Please create a detailed answer to the overall research brief that:
 1. Is well-organized with proper headings (# for title, ## for sections, ### for subsections)
 2. Includes specific facts and insights from the research
@@ -259,6 +265,8 @@ Please create a detailed answer to the overall research brief that:
 5. Does not include a Sources section (it is added automatically)
 6. Covers every research-plan dimension above. For dimensions marked unavailable, state that
    the information could not be verified rather than inventing an answer.
+7. For every covered requirement, include the hidden marker
+   `<!-- evidence: dimension-id:number -->` once. These markers are removed before delivery.
 
 You can structure your report in a number of different ways. Here are some examples:
 

@@ -1,0 +1,91 @@
+# Keep SearXNG's built-in engine and locale catalog, overriding only values below.
+use_default_settings: true
+
+general:
+  # Name shown in the local SearXNG interface.
+  instance_name: "Open Deep Research"
+
+server:
+  # Cryptographic key used for local SearXNG sessions and preferences.
+  secret_key: "open-deep-research-local-dev-key"
+  # Disable public-instance rate limiting because this instance is local only.
+  limiter: false
+  # Do not enable settings intended for publicly hosted instances.
+  public_instance: false
+  # Avoid proxying image content through the local instance.
+  image_proxy: false
+  default_http_headers:
+    # Prevent browsers from MIME-sniffing responses.
+    X-Content-Type-Options: "nosniff"
+    # Prevent downloaded responses from being opened automatically.
+    X-Download-Options: "noopen"
+    # Prevent indexing and following links on this local instance.
+    X-Robots-Tag: "noindex, nofollow"
+    # Do not send the local search URL as a referrer.
+    Referrer-Policy: "no-referrer"
+
+search:
+  # An empty default lets SearXNG and the upstream engines infer the locale.
+  # Leaving languages unset keeps the complete locale list from SearXNG.
+  default_lang: ""
+  # Do not filter results by content safety for general research.
+  safe_search: 0
+  # Allow engines to use their supported result pages without a SearXNG cap.
+  max_page: 0
+  # Temporarily suspend an engine after its first failure.
+  ban_time_on_fail: 5
+  # Cap repeated suspension backoff at two minutes.
+  max_ban_time_on_fail: 120
+  suspended_times:
+    # Suspend engines returning access-denied responses for one day.
+    SearxEngineAccessDenied: 86400
+    # Suspend engines returning CAPTCHA responses for one day.
+    SearxEngineCaptcha: 86400
+    # Suspend rate-limited engines for one hour.
+    SearxEngineTooManyRequests: 3600
+    # Suspend Cloudflare CAPTCHA failures for 15 days.
+    cf_SearxEngineCaptcha: 1296000
+    # Suspend Cloudflare access-denied failures for one day.
+    cf_SearxEngineAccessDenied: 86400
+    # Suspend Google reCAPTCHA failures for seven days.
+    recaptcha_SearxEngineCaptcha: 604800
+  formats:
+    # Browser-friendly response format.
+    - html
+    # Machine-readable format used by the research application.
+    - json
+    # Tabular machine-readable response format.
+    - csv
+    # Feed-compatible response format.
+    - rss
+
+outgoing:
+  # Allow slower regional engines to contribute without making the local
+  # request wait indefinitely.
+  # Default timeout for each upstream engine request.
+  request_timeout: 5.0
+  # Hard upper bound for an individual engine timeout.
+  max_request_timeout: 10.0
+  # Retry one failed upstream HTTP request when supported.
+  retries: 1
+  # Use HTTP/2 when the upstream engine supports it.
+  enable_http2: true
+
+# Preserve SearXNG's default engine enablement and API-key policy, but pass
+# locale information to engines that support regional responses.
+engines:
+  - name: brave
+    # Forward the selected locale to Brave for regional results.
+    send_accept_language_header: true
+  - name: duckduckgo
+    # Forward the selected locale to DuckDuckGo for regional results.
+    send_accept_language_header: true
+  - name: bing news
+    # Forward the selected locale to Bing News for regional results.
+    send_accept_language_header: true
+  - name: google news
+    # Forward the selected locale to Google News for regional results.
+    send_accept_language_header: true
+  - name: wikipedia
+    # Forward the selected locale to Wikipedia for regional results.
+    send_accept_language_header: true

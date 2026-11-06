@@ -33,6 +33,7 @@ from open_deep_research.state import (
     AgentInputState,
     AgentState,
     ClarifyWithUser,
+    CreateResearchPlan,
     ConductResearch,
     ResearchComplete,
     ResearcherOutputState,
@@ -56,14 +57,14 @@ configurable_model = init_chat_model(
     configurable_fields=("model", "max_tokens", "num_predict"),
 )
 
-def _has_requirement_evidence(
+def _covered_requirement_numbers(
     requirements: list[str],
     raw_notes: str,
     source_ids: list[str],
-) -> bool:
-    """Require one source-backed evidence block for every planned requirement."""
+) -> set[int]:
+    """Return numbered requirements with source-backed evidence blocks."""
     if not requirements or not raw_notes or not source_ids:
-        return False
+        return set()
     blocks = re.split(r"(?=Requirement \d+:)", raw_notes)
     covered_numbers = {
         int(match.group(1))
@@ -73,7 +74,21 @@ def _has_requirement_evidence(
         for match in [re.match(r"Requirement (\d+):", block)]
         if match
     }
-    return covered_numbers >= set(range(1, len(requirements) + 1))
+    return covered_numbers
+
+
+def _missing_report_requirements(
+    report: str,
+    research_plan: list[dict],
+) -> list[str]:
+    """Find requirement markers omitted from a generated report."""
+    markers = set(re.findall(r"<!-- evidence: ([^ ]+:\d+) -->", report))
+    return [
+        f"{item['id']}:{number}"
+        for item in research_plan
+        for number in item["covered_requirements"]
+        if f"{item['id']}:{number}" not in markers
+    ]
 
 
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
@@ -194,7 +209,10 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     )
 
 
-async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[Literal["supervisor_tools"]]:
+async def supervisor(
+    state: SupervisorState,
+    config: RunnableConfig,
+) -> Command[Literal["supervisor", "supervisor_tools"]]:
     """Lead research supervisor that plans research strategy and delegates to researchers.
     
     The supervisor analyzes the research brief and decides how to break down the research
@@ -216,6 +234,48 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
         supervisor_limit_param: configurable.research_model_max_tokens,
         "tags": ["langsmith:nostream"]
     }
+
+    if not state.get("research_plan"):
+        planner_model = (
+            configurable_model
+            .with_structured_output(CreateResearchPlan)
+            .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
+            .with_config(research_model_config)
+        )
+        plan_response = await planner_model.ainvoke(state.get("supervisor_messages", []))
+        research_plan = [
+            {
+                "id": dimension.dimension_id,
+                "subject": dimension.subject,
+                "aspect": dimension.aspect,
+                "deliverable": dimension.deliverable,
+                "requirement": dimension.research_topic,
+                "evidence_requirements": dimension.evidence_requirements,
+                "queries": dimension.search_queries,
+                "status": "pending",
+                "source_ids": [],
+                "attempts": 0,
+                "covered_requirements": [],
+            }
+            for dimension in plan_response.dimensions
+        ]
+        plan_context = "\n".join(
+            f"- {item['id']}: {item['requirement']} "
+            f"(requirements: {item['evidence_requirements']})"
+            for item in research_plan
+        )
+        return Command(
+            goto="supervisor",
+            update={
+                "research_plan": research_plan,
+                "supervisor_messages": [
+                    HumanMessage(content=(
+                        "Complete research plan created. Research every pending dimension:\n"
+                        f"{plan_context}"
+                    ))
+                ],
+            },
+        )
     
     # Available tools: research delegation, completion signaling, and strategic thinking
     lead_researcher_tools = [ConductResearch, ResearchComplete, think_tool]
@@ -263,7 +323,11 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     most_recent_message = supervisor_messages[-1]
     
     # Define exit criteria for research phase
-    exceeded_allowed_iterations = research_iterations > configurable.max_researcher_iterations
+    max_iterations = max(
+        configurable.max_researcher_iterations,
+        min(len(state.get("research_plan", [])) * 3 + 1, 20),
+    )
+    exceeded_allowed_iterations = research_iterations > max_iterations
     no_tool_calls = not most_recent_message.tool_calls
     research_complete_tool_call = any(
         tool_call["name"] == "ResearchComplete" 
@@ -274,7 +338,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
         item["status"] == "pending" for item in state.get("research_plan", [])
     )
 
-    if (research_complete_tool_call or no_tool_calls) and (
+    if (research_complete_tool_call or (no_tool_calls and not has_pending_dimensions)) and (
         not has_research_results or has_pending_dimensions
     ):
         if research_iterations >= configurable.max_researcher_iterations:
@@ -321,6 +385,44 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     all_tool_messages = []
     update_payload = {"supervisor_messages": []}
     plan = {item["id"]: item for item in state.get("research_plan", [])}
+
+    plan_calls = [
+        tool_call for tool_call in most_recent_message.tool_calls
+        if tool_call["name"] == "CreateResearchPlan"
+    ]
+    for tool_call in plan_calls:
+        if not state.get("research_plan"):
+            plan = {
+                dimension["dimension_id"]: {
+                    "id": dimension["dimension_id"],
+                    "subject": dimension["subject"],
+                    "aspect": dimension["aspect"],
+                    "deliverable": dimension["deliverable"],
+                    "requirement": dimension["research_topic"],
+                    "evidence_requirements": dimension["evidence_requirements"],
+                    "queries": dimension.get("search_queries", []),
+                    "status": "pending",
+                    "source_ids": [],
+                    "attempts": 0,
+                    "covered_requirements": [],
+                }
+                for dimension in tool_call["args"]["dimensions"]
+            }
+            plan_message = "Research plan created."
+        else:
+            plan_message = "A research plan already exists."
+        all_tool_messages.append(ToolMessage(
+            content=(
+                f"{plan_message} Delegate each pending dimension:\n"
+                + "\n".join(
+                    f"- {item['id']}: {item['requirement']} "
+                    f"(requirements: {item['evidence_requirements']})"
+                    for item in plan.values()
+                )
+            ),
+            name="CreateResearchPlan",
+            tool_call_id=tool_call["id"],
+        ))
     
     # Handle think_tool calls (strategic reflection)
     think_tool_calls = [
@@ -341,8 +443,28 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
         tool_call for tool_call in most_recent_message.tool_calls 
         if tool_call["name"] == "ConductResearch"
     ]
-    
-    if conduct_research_calls:
+
+    if not conduct_research_calls and not research_complete_tool_call:
+        pending_item = next(
+            (item for item in plan.values() if item["status"] == "pending"),
+            None,
+        )
+        if pending_item:
+            conduct_research_calls = [{
+                "name": "ConductResearch",
+                "id": f"automatic-{pending_item['id']}-{pending_item['attempts'] + 1}",
+                "args": {
+                    "dimension_id": pending_item["id"],
+                    "subject": pending_item["subject"],
+                    "aspect": pending_item["aspect"],
+                    "deliverable": pending_item["deliverable"],
+                    "research_topic": pending_item["requirement"],
+                    "evidence_requirements": pending_item["evidence_requirements"],
+                    "search_queries": pending_item["queries"],
+                },
+            }]
+
+    if conduct_research_calls and not plan_calls:
         try:
             # Limit concurrent research units to prevent resource exhaustion
             allowed_conduct_research_calls = conduct_research_calls[:configurable.max_concurrent_research_units]
@@ -351,14 +473,19 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                 args = tool_call["args"]
                 dimension_id = args.get("dimension_id") or f"dimension-{len(plan) + index + 1:03}"
                 args["dimension_id"] = dimension_id
-                plan[dimension_id] = {
+                item = plan.setdefault(dimension_id, {
                     "id": dimension_id,
+                    "subject": args.get("subject", args["research_topic"]),
+                    "aspect": args.get("aspect", "requested evidence"),
+                    "deliverable": args.get("deliverable", args["research_topic"]),
                     "requirement": args["research_topic"],
                     "evidence_requirements": args["evidence_requirements"],
                     "queries": args.get("search_queries", []),
                     "status": "pending",
                     "source_ids": [],
-                }
+                    "attempts": 0,
+                })
+                item["attempts"] += 1
             
             # Execute research tasks in parallel
             research_tasks = [
@@ -366,6 +493,9 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                     "researcher_messages": [
                         HumanMessage(content=(
                             f"Research dimension {tool_call['args'].get('dimension_id', '')}:\n"
+                            f"Subject: {tool_call['args'].get('subject', '')}\n"
+                            f"Aspect: {tool_call['args'].get('aspect', '')}\n"
+                            f"Deliverable: {tool_call['args'].get('deliverable', '')}\n"
                             f"{tool_call['args']['research_topic']}\n"
                             f"Evidence requirements: {tool_call['args']['evidence_requirements']}\n"
                             f"Targeted search queries: {tool_call['args'].get('search_queries', [])}"
@@ -391,13 +521,18 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                     source_ids = sorted(
                         set(re.findall(r"\[?(S[0-9a-f]{6})\]?", raw_notes))
                     )
+                    covered_requirements = sorted(_covered_requirement_numbers(
+                        plan[dimension_id]["evidence_requirements"],
+                        raw_notes,
+                        source_ids,
+                    ))
+                    plan[dimension_id]["covered_requirements"] = covered_requirements
                     plan[dimension_id]["status"] = (
                         "covered"
-                        if _has_requirement_evidence(
-                            plan[dimension_id]["evidence_requirements"],
-                            raw_notes,
-                            source_ids,
-                        )
+                        if set(covered_requirements)
+                        >= set(range(1, len(plan[dimension_id]["evidence_requirements"]) + 1))
+                        else "unavailable"
+                        if plan[dimension_id]["attempts"] >= 3
                         else "pending"
                     )
                     plan[dimension_id]["source_ids"] = source_ids
@@ -728,6 +863,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
     notes = state.get("notes", [])
     cleared_state = {"notes": {"type": "override", "value": []}}
     findings = "\n".join(notes)
+    research_plan = state.get("research_plan", [])
     
     # Step 2: Configure the final report generation model
     configurable = Configuration.from_runnable_config(config)
@@ -752,9 +888,15 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 findings=findings,
                 research_plan="\n".join(
                     f"- {item['id']}: {item['requirement']} "
-                    f"(evidence requirements: {item['evidence_requirements']}; "
+                    f"(subject: {item['subject']}; aspect: {item['aspect']}; "
+                    f"evidence requirements: {item['evidence_requirements']}; "
                     f"status: {item['status']}, sources: {', '.join(item['source_ids']) or 'none'})"
-                    for item in state.get("research_plan", [])
+                    for item in research_plan
+                ),
+                coverage_markers="\n".join(
+                    f"<!-- evidence: {item['id']}:{number} -->"
+                    for item in research_plan
+                    for number in item["covered_requirements"]
                 ),
                 date=get_today_str()
             )
@@ -764,7 +906,21 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 HumanMessage(content=final_report_prompt)
             ])
             
-            final_report.content = finalize_citations(str(final_report.content), state.get("raw_notes", []))
+            report_text = str(final_report.content)
+            missing_requirements = _missing_report_requirements(report_text, research_plan)
+            if missing_requirements:
+                repair_prompt = (
+                    "Repair this report by adding only the missing evidence markers and "
+                    "the corresponding source-backed content. Preserve existing content and "
+                    "citations. Missing markers: "
+                    f"{', '.join(missing_requirements)}\n\nReport:\n{report_text}"
+                )
+                final_report = await configurable_model.with_config(writer_model_config).ainvoke([
+                    HumanMessage(content=repair_prompt)
+                ])
+                report_text = str(final_report.content)
+            report_text = re.sub(r"<!-- evidence: [^>]+ -->\s*", "", report_text)
+            final_report.content = finalize_citations(report_text, state.get("raw_notes", []))
             return {
                 "final_report": final_report.content, 
                 "messages": [final_report],

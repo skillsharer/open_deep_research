@@ -65,9 +65,26 @@ async def research(graph, text: str, config: dict, placeholder) -> str:
             if node in dict(PHASES):
                 phase = [n for n, _ in PHASES].index(node) + 1
             elif node == "supervisor":
-                calls = output["supervisor_messages"][-1].tool_calls
+                plan = output.get("research_plan", [])
+                if plan and not topics:
+                    topics = [
+                        {
+                            "title": item["requirement"],
+                            "queries": item.get("queries", []),
+                            "done": item["status"] in {"covered", "unavailable"},
+                        }
+                        for item in plan
+                    ]
+                messages = output.get("supervisor_messages", [])
+                last_message = messages[-1] if messages else None
+                calls = getattr(last_message, "tool_calls", [])
                 titles = [c["args"]["research_topic"] for c in calls if c["name"] == "ConductResearch"]
-                topics += [{"title": t, "queries": [], "done": False} for t in titles[:max_units]]
+                known_titles = {topic["title"] for topic in topics}
+                topics += [
+                    {"title": t, "queries": [], "done": False}
+                    for t in titles[:max_units]
+                    if t not in known_titles
+                ]
             elif node == "researcher" and topics:
                 for message in output.get("researcher_messages", []):
                     for call in getattr(message, "tool_calls", []):

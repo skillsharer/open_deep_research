@@ -42,28 +42,15 @@ if ! curl --silent --fail http://localhost:11434/api/tags >/dev/null; then
     fi
 fi
 
-if [[ -d .searxng-settings.yml ]]; then
-    rmdir .searxng-settings.yml || {
-        echo ".searxng-settings.yml exists as a non-empty directory." >&2
-        exit 1
-    }
+if [[ ! -f searxng/settings.yml ]]; then
+    echo "Missing searxng/settings.yml." >&2
+    exit 1
 fi
-
-cat > .searxng-settings.yml <<'EOF'
-use_default_settings: true
-server:
-  secret_key: "open-deep-research-local-dev-key"
-  limiter: false
-search:
-  formats:
-    - html
-    - json
-EOF
 
 docker run -d --rm --name open-deep-research-searxng \
     -p 8080:8080 \
     -e SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml \
-    -v "$PWD/.searxng-settings.yml:/etc/searxng/settings.yml:ro" \
+    -v "$PWD/searxng/settings.yml:/etc/searxng/settings.yml:ro" \
     searxng/searxng:latest >/dev/null
 
 for _ in {1..60}; do
@@ -82,7 +69,6 @@ fi
 cleanup() {
     trap - EXIT INT TERM
     docker stop open-deep-research-searxng >/dev/null 2>&1 || true
-    rm -f .searxng-settings.yml
     if [[ -n "$OLLAMA_PID" ]]; then
         kill "$OLLAMA_PID" 2>/dev/null || true
     fi

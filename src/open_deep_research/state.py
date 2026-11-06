@@ -28,6 +28,20 @@ class ConductResearch(BaseModel):
         description="Targeted search queries for this dimension.",
     )
 
+class ResearchPlanDimension(BaseModel):
+    """One dimension in the complete research plan."""
+    dimension_id: str
+    subject: str = Field(description="The entity, object, period, factor, or facet being researched.")
+    aspect: str = Field(description="The requested attribute or question facet for this subject.")
+    deliverable: str = Field(description="The specific answer unit this research must provide.")
+    research_topic: str
+    evidence_requirements: list[str]
+    search_queries: list[str] = Field(default_factory=list)
+
+class CreateResearchPlan(BaseModel):
+    """Create the complete research plan before delegating research."""
+    dimensions: list[ResearchPlanDimension]
+
 class ResearchComplete(BaseModel):
     """Call this tool to indicate that the research is complete."""
 
@@ -64,11 +78,16 @@ class ResearchQuestion(BaseModel):
 
 class ResearchPlanItem(TypedDict):
     id: str
+    subject: str
+    aspect: str
+    deliverable: str
     requirement: str
     evidence_requirements: list[str]
     queries: list[str]
     status: Literal["pending", "covered", "unavailable"]
     source_ids: list[str]
+    attempts: int
+    covered_requirements: list[int]
 
 def override_reducer(current_value, new_value):
     """Reducer function that allows overriding values in state."""
