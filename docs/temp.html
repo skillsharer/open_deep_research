@@ -1,0 +1,121 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="Content-Style-Type" content="text/css">
+  <title></title>
+  <meta name="Generator" content="Cocoa HTML Writer">
+  <meta name="CocoaVersion" content="2685.4">
+  <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px 'Helvetica Light'}
+    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px 'Helvetica Light'; min-height: 14.0px}
+  </style>
+</head>
+<body>
+<p class="p1"># Architecture</p>
+<p class="p2"><br></p>
+<p class="p1">All paths are relative to the repo root.</p>
+<p class="p2"><br></p>
+<p class="p1">```mermaid</p>
+<p class="p1">flowchart TB</p>
+<p class="p1"><span class="Apple-converted-space">    </span>subgraph Launcher["run.sh"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>RUN["run.sh: starts SearXNG (Docker), Ollama, exports env, launches Streamlit; trap cleanup stops containers"]</p>
+<p class="p1"><span class="Apple-converted-space">    </span>end</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>subgraph UI["app.py (Streamlit)"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>GG["get_graph() - compiles graph with in-memory checkpointer"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>RT["run_turn() - streams graph updates"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>RS["research() - phase line + topic checklist"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>RD["render() / tick() - progress and timer"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>GG --&gt; RT --&gt; RS --&gt; RD</p>
+<p class="p1"><span class="Apple-converted-space">    </span>end</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>subgraph Graph["src/open_deep_research/deep_researcher.py - deep_researcher_builder"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>C["clarify_with_user()"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>B["write_research_brief()"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>subgraph Sup["supervisor_subgraph (supervisor_builder)"]</p>
+<p class="p1"><span class="Apple-converted-space">            </span>S["supervisor()"]</p>
+<p class="p1"><span class="Apple-converted-space">            </span>ST["supervisor_tools()"]</p>
+<p class="p1"><span class="Apple-converted-space">            </span>S --&gt; ST --&gt; S</p>
+<p class="p1"><span class="Apple-converted-space">        </span>end</p>
+<p class="p1"><span class="Apple-converted-space">        </span>subgraph Res["researcher_subgraph (researcher_builder), one per topic"]</p>
+<p class="p1"><span class="Apple-converted-space">            </span>R["researcher()"]</p>
+<p class="p1"><span class="Apple-converted-space">            </span>RTL["researcher_tools()&lt;br/&gt;execute_tool_safely()"]</p>
+<p class="p1"><span class="Apple-converted-space">            </span>CR["compress_research()"]</p>
+<p class="p1"><span class="Apple-converted-space">            </span>R --&gt; RTL --&gt; R</p>
+<p class="p1"><span class="Apple-converted-space">            </span>RTL --&gt; CR</p>
+<p class="p1"><span class="Apple-converted-space">        </span>end</p>
+<p class="p1"><span class="Apple-converted-space">        </span>F["final_report_generation()"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>C --&gt; B --&gt; S</p>
+<p class="p1"><span class="Apple-converted-space">        </span>ST -- "ConductResearch (parallel, limited by max_concurrent_research_units)" --&gt; R</p>
+<p class="p1"><span class="Apple-converted-space">        </span>CR -- "notes" --&gt; ST</p>
+<p class="p1"><span class="Apple-converted-space">        </span>ST -- "ResearchComplete" --&gt; F</p>
+<p class="p1"><span class="Apple-converted-space">    </span>end</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>subgraph Utils["src/open_deep_research/utils.py"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>GAT["get_all_tools()"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>GST["get_search_tool()"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>SX["searxng_search() - SEARXNG_LANGUAGES, SEARXNG_MAX_RESULTS, source IDs"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>SP["select_passages() - Ollama embedding-ranked overlapping passages"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>RA["write_run_artifact() / write_run_manifest() - atomic failed-run recovery files"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>FH["fetch_html() - archive fallback on 401/402/403/429"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>TT["think_tool()"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>MCP["load_mcp_tools() / get_tokens() / set_tokens() (optional MCP + Supabase)"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>FC["finalize_citations() - [S id] to [n], Sources built from retrieval metadata"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>GN["get_notes_from_tool_calls()"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>TL["is_token_limit_exceeded() / get_model_token_limit()"]</p>
+<p class="p1"><span class="Apple-converted-space">    </span>end</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>subgraph Cfg["Configuration and prompts"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>CF["configuration.py: Configuration, SearchAPI, MCPConfig"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>ST2["state.py: AgentState, SupervisorState, ResearcherState, ConductResearch, ResearchComplete"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>PR["prompts.py: clarify / brief / lead_researcher / research_system / compress_research / final_report_generation prompts"]</p>
+<p class="p1"><span class="Apple-converted-space">    </span>end</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>subgraph Ext["Local services"]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>SXNG[("SearXNG container :8080")]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>OLL[("Ollama :11434 (gemma4)")]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>WEB[("Target web pages")]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>IA[("Internet Archive (Wayback)")]</p>
+<p class="p1"><span class="Apple-converted-space">        </span>TMP[(".research-runs/&lt;run-id&gt;")]</p>
+<p class="p1"><span class="Apple-converted-space">    </span>end</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>RUN --&gt; UI</p>
+<p class="p1"><span class="Apple-converted-space">    </span>RUN --&gt; SXNG</p>
+<p class="p1"><span class="Apple-converted-space">    </span>RUN --&gt; OLL</p>
+<p class="p1"><span class="Apple-converted-space">    </span>RT --&gt; C</p>
+<p class="p1"><span class="Apple-converted-space">    </span>R --&gt; GAT --&gt; GST --&gt; SX</p>
+<p class="p1"><span class="Apple-converted-space">    </span>GAT --&gt; TT</p>
+<p class="p1"><span class="Apple-converted-space">    </span>GAT --&gt; MCP</p>
+<p class="p1"><span class="Apple-converted-space">    </span>SX -- "queries (sequential, 2s apart)" --&gt; SXNG</p>
+<p class="p1"><span class="Apple-converted-space">    </span>SP --&gt; EMB</p>
+<p class="p1"><span class="Apple-converted-space">    </span>SX --&gt; FH</p>
+<p class="p1"><span class="Apple-converted-space">    </span>FH -- "fetch + trafilatura extract" --&gt; WEB</p>
+<p class="p1"><span class="Apple-converted-space">    </span>FH --&gt; SP</p>
+<p class="p1"><span class="Apple-converted-space">    </span>SP -- "selected content + metadata" --&gt; SX</p>
+<p class="p1"><span class="Apple-converted-space">    </span>EMB[(Ollama embedding model)]</p>
+<p class="p1"><span class="Apple-converted-space">    </span>SX --&gt; RA</p>
+<p class="p1"><span class="Apple-converted-space">    </span>RA --&gt; TMP</p>
+<p class="p1"><span class="Apple-converted-space">    </span>FH -- "if blocked" --&gt; IA</p>
+<p class="p1"><span class="Apple-converted-space">    </span>C &amp; B &amp; S &amp; R &amp; CR &amp; F -- "init_chat_model" --&gt; OLL</p>
+<p class="p1"><span class="Apple-converted-space">    </span>ST --&gt; GN</p>
+<p class="p1"><span class="Apple-converted-space">    </span>F --&gt; FC</p>
+<p class="p1"><span class="Apple-converted-space">    </span>F --&gt; TL</p>
+<p class="p1"><span class="Apple-converted-space">    </span>Graph --- Cfg</p>
+<p class="p1">```</p>
+<p class="p2"><br></p>
+<p class="p1">## Flow</p>
+<p class="p2"><br></p>
+<p class="p1">1. [run.sh](../run.sh) starts SearXNG and Ollama, sets env vars, and runs [app.py](../app.py).</p>
+<p class="p1">2. [`run_turn`](../app.py) streams the graph; [`research`](../app.py) maps node names to the phases Clarify, Brief, Research, Report.</p>
+<p class="p1">3. [`clarify_with_user`](../src/open_deep_research/deep_researcher.py) may ask a question, otherwise [`write_research_brief`](../src/open_deep_research/deep_researcher.py) creates the brief.</p>
+<p class="p1">4. [`supervisor`](../src/open_deep_research/deep_researcher.py) creates the complete atomic plan before research; Pydantic validators enforce unique dimensions, non-empty requirements, and targeted queries. If Gemma returns malformed structured output, the planner performs one schema-repair generation and then falls back to one deterministic searchable dimension rather than crashing the run. It tracks each dimension, atomic evidence requirements, targeted queries, status, attempts and source IDs while [`supervisor_tools`](../src/open_deep_research/deep_researcher.py) deterministically schedules pending dimensions with bounded retries. Empty retrieval is recorded as a failed attempt, pending work is never silently treated as complete, and unresolved dimensions become unavailable after the retry budget. Plan snapshots replace prior snapshots so dimensions are not duplicated.</p>
+<p class="p1">5. [`researcher`](../src/open_deep_research/deep_researcher.py) calls [`searxng_search`](../src/open_deep_research/utils.py) and `think_tool`; [`compress_research`](../src/open_deep_research/deep_researcher.py) returns a note that cites sources by ID (`[S3f9a1c]`) and preserves its structured evidence blocks for coverage validation. Failed dimensions are retried up to their bounded attempt limit, while completed raw evidence is preserved.</p>
+<p class="p1">6. [`final_report_generation`](../src/open_deep_research/deep_researcher.py) blocks unresolved plans, validates report markers again after any repair, writes the report with source IDs, then [`finalize_citations`](../src/open_deep_research/utils.py) numbers them by first appearance and builds the Sources list from the retrieved metadata (unknown IDs are dropped). Reports with retrieved sources but no citations are rejected rather than returned as unsupported findings.</p>
+<p class="p2"><br></p>
+<p class="p1">## Tests</p>
+<p class="p2"><br></p>
+<p class="p1">- [tests/test_live_search.py](../tests/test_live_search.py): SearXNG and Trafilatura connectivity.</p>
+<p class="p1">- [tests/test_live_research.py](../tests/test_live_research.py): end-to-end research quality over several questions in `CASES` (facts retrieved and reported, grounded citations, claims supported by cited sources). Run with `uv run pytest -m live`.</p>
+</body>
+</html>

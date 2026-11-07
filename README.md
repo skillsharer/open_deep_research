@@ -115,12 +115,15 @@ uv run python tests/run_benchmark.py --limit 3
 uv run python tests/evaluate_benchmark.py
 ```
 
-The scorer reports dimension coverage, citation structure and report length. The inputs and rubric dimensions are fixed; the web and model outputs remain variable by design.
+The scorer reports dimension coverage, citation structure and report length. The inputs and rubric dimensions are fixed; the web and model outputs remain variable by design. Benchmark records also retain the research plan, failed-dimension errors, raw-note count, and retrieved source count so retrieval failures can be separated from synthesis failures.
 To start Ollama and SearXNG, run the same benchmark, and stop the services automatically when it finishes, use:
 
 ```bash
 ./run.sh benchmark
 ```
+
+Research progress is logged to the terminal, including planning, dimension attempts,
+compression, and report generation. The benchmark also logs the current case ID.
 
 Set `BENCHMARK_LIMIT` to change the number of fixed cases.
 
@@ -152,19 +155,3 @@ We've deployed Open Deep Research to our public demo instance of OAP. All you ne
 You can also deploy your own instance of OAP, and make your own custom agents (like Deep Researcher) available on it to your users.
 1. [Deploy Open Agent Platform](https://docs.oap.langchain.com/quickstart)
 2. [Add Deep Researcher to OAP](https://docs.oap.langchain.com/setup/agents)
-
-### Legacy Implementations 🏛️
-
-The `src/legacy/` folder contains two earlier implementations that provide alternative approaches to automated research. They are less performant than the current implementation, but provide alternative ideas understanding the different approaches to deep research.
-
-#### 1. Workflow Implementation (`legacy/graph.py`)
-- **Plan-and-Execute**: Structured workflow with human-in-the-loop planning
-- **Sequential Processing**: Creates sections one by one with reflection
-- **Interactive Control**: Allows feedback and approval of report plans
-- **Quality Focused**: Emphasizes accuracy through iterative refinement
-
-#### 2. Multi-Agent Implementation (`legacy/multi_agent.py`)  
-- **Supervisor-Researcher Architecture**: Coordinated multi-agent system
-- **Parallel Processing**: Multiple researchers work simultaneously
-- **Speed Optimized**: Faster report generation through concurrency
-- **MCP Support**: Extensive Model Context Protocol integration

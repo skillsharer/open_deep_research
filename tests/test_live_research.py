@@ -2,11 +2,8 @@
 
 import asyncio
 import re
-
 import pytest
-
 from open_deep_research.deep_researcher import deep_researcher
-
 pytestmark = pytest.mark.live
 
 # (question, facts every good report must contain; facts are lowercase substrings)

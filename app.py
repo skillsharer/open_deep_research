@@ -1,6 +1,7 @@
 """Minimal local Streamlit chat UI for the Deep Researcher graph."""
 
 import asyncio
+import logging
 import time
 import uuid
 
@@ -9,6 +10,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from open_deep_research.configuration import Configuration
 from open_deep_research.deep_researcher import deep_researcher_builder
+
+logging.basicConfig(format="%(levelname)s %(name)s: %(message)s")
+logging.getLogger("open_deep_research.deep_researcher").setLevel(logging.INFO)
 
 
 @st.cache_resource

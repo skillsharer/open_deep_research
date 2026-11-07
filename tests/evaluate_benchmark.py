@@ -29,6 +29,22 @@ def score(report: str, rubric: list[str]) -> dict[str, int]:
     }
 
 
+def diagnostics(result: dict) -> str:
+    plan = result.get("research_plan", [])
+    unique_ids = {item.get("id") for item in plan}
+    terminal = sum(item.get("status") in {"covered", "unavailable"} for item in plan)
+    errors = len(result.get("research_errors", []))
+    expected_ids = {item.get("id") for item in plan}
+    reported_ids = set(result.get("report_dimension_ids", []))
+    marker_coverage = len(expected_ids & reported_ids)
+    return (
+        f"planned={len(unique_ids)}/{len(plan)}, "
+        f"terminal={terminal}, markers={marker_coverage}/{len(expected_ids)}, "
+        f"evidence_blocks={result.get('evidence_block_count', 0)}, "
+        f"sources={result.get('source_count', 0)}, errors={errors}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference", default="tests/expt_results/deep_research_bench_gpt-5.jsonl")
@@ -44,7 +60,8 @@ def main() -> None:
         sys.stdout.write(
             f'{report["id"]}: local={result["covered"]}/{result["dimensions"]}, '
             f'reference={baseline["covered"]}/{baseline["dimensions"]}, '
-            f'citations={result["citation_structure"]}, length={result["length"]}\n'
+            f'citations={result["citation_structure"]}, length={result["length"]}, '
+            f'{diagnostics(report)}\n'
         )
 
 

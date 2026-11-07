@@ -76,6 +76,24 @@ Guidelines:
 - If the query is in a specific language, prioritize sources published in that language.
 """
 
+research_plan_prompt = """Create a complete, atomic research plan for the user's brief.
+
+Planning rules:
+- Create one dimension for each independent answer unit.
+- If the user names multiple entities, firms, products, locations, periods, or alternatives,
+  create a separate dimension for each named item unless the user explicitly requests only a
+  group-level summary.
+- A dimension must contain one primary subject only. Do not put comma-separated entities,
+  lists, "A and B" subjects, or named groups such as "the Big Four" into one dimension.
+- For comparisons, create one dimension per subject and repeat the requested aspect rather
+  than grouping the subjects together.
+- For broad questions, separate each requested facet such as mechanisms, measurements,
+  applications, risks, comparisons, timelines, methods, and open questions.
+- Do not merge distinct entities or requested facets into a single broad dimension.
+- Do not add generic introduction or conclusion dimensions.
+- Each dimension must have atomic evidence requirements and targeted search queries.
+"""
+
 lead_researcher_prompt = """You are a research supervisor. Your job is to conduct research by calling the "ConductResearch" tool. For context, today's date is {date}.
 
 <Task>
@@ -254,6 +272,9 @@ Here are the findings from the research that you conducted:
 {research_plan}
 </Coverage Plan>
 
+Required dimension markers:
+{dimension_markers}
+
 Required coverage markers:
 {coverage_markers}
 
@@ -265,7 +286,12 @@ Please create a detailed answer to the overall research brief that:
 5. Does not include a Sources section (it is added automatically)
 6. Covers every research-plan dimension above. For dimensions marked unavailable, state that
    the information could not be verified rather than inventing an answer.
-7. For every covered requirement, include the hidden marker
+7. Create a clearly labeled section or subsection for every research-plan dimension.
+   Do not merge distinct dimensions, named entities, or requested facets into one
+   broad section. Use the dimension subject and aspect in the heading or opening.
+8. Include each required dimension marker exactly once:
+   `<!-- dimension: dimension-id -->`. These markers are removed before delivery.
+9. For every covered requirement, include the hidden marker
    `<!-- evidence: dimension-id:number -->` once. These markers are removed before delivery.
 
 You can structure your report in a number of different ways. Here are some examples:

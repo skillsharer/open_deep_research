@@ -1,6 +1,7 @@
 """Main LangGraph implementation for the Deep Research agent."""
 
 import asyncio
+import logging
 import re
 from typing import Literal
 
@@ -26,6 +27,7 @@ from open_deep_research.prompts import (
     compress_research_system_prompt,
     final_report_generation_prompt,
     lead_researcher_prompt,
+    research_plan_prompt,
     research_system_prompt,
     transform_messages_into_research_topic_prompt,
 )
@@ -56,6 +58,8 @@ from open_deep_research.utils import (
 configurable_model = init_chat_model(
     configurable_fields=("model", "max_tokens", "num_predict"),
 )
+logger = logging.getLogger(__name__)
+MAX_DIMENSION_ATTEMPTS = 3
 
 def _covered_requirement_numbers(
     requirements: list[str],
@@ -89,6 +93,126 @@ def _missing_report_requirements(
         for number in item["covered_requirements"]
         if f"{item['id']}:{number}" not in markers
     ]
+
+
+def _missing_report_dimensions(
+    report: str,
+    research_plan: list[dict],
+) -> list[str]:
+    """Find research-plan dimensions omitted from a generated report."""
+    markers = set(re.findall(r"<!-- dimension: ([^ ]+) -->", report))
+    return [
+        item["id"]
+        for item in research_plan
+        if item["id"] not in markers
+    ]
+
+
+def _merge_report_repair(
+    original: str,
+    repaired: str,
+    research_plan: list[dict],
+) -> str:
+    """Preserve the original report unless the repair returns a complete report."""
+    expected_dimensions = {item["id"] for item in research_plan}
+    repaired_dimensions = set(re.findall(r"<!-- dimension: ([^ ]+) -->", repaired))
+    if expected_dimensions.issubset(repaired_dimensions):
+        return repaired
+    return f"{original}\n\n{repaired}"
+
+
+def _research_plan_errors(plan: list[dict]) -> list[str]:
+    """Validate persisted plan invariants before execution or report generation."""
+    errors = []
+    ids = [item.get("id") for item in plan]
+    subjects = [
+        (item.get("subject", "").casefold(), item.get("aspect", "").casefold())
+        for item in plan
+    ]
+    if len(ids) != len(set(ids)):
+        errors.append("research plan contains duplicate dimension IDs")
+    if len(subjects) != len(set(subjects)):
+        errors.append("research plan contains duplicate subject/aspect pairs")
+    for item in plan:
+        if not all(item.get(field, "").strip() for field in ("id", "subject", "aspect", "deliverable")):
+            errors.append(f"{item.get('id', 'unknown')} has empty required fields")
+        if item.get("status") not in {"pending", "in_progress", "covered", "unavailable"}:
+            errors.append(f"{item.get('id', 'unknown')} has an invalid status")
+        if item.get("attempts", -1) < 0:
+            errors.append(f"{item.get('id', 'unknown')} has invalid attempts")
+        if not set(item.get("covered_requirements", [])).issubset(
+            set(range(1, len(item.get("evidence_requirements", [])) + 1))
+        ):
+            errors.append(f"{item.get('id', 'unknown')} has invalid covered requirements")
+    return errors
+
+
+def _findings_for_report(
+    notes: list[str],
+    evidence_blocks: list[str],
+    raw_notes: list[str],
+) -> str:
+    """Prefer compressed findings, but preserve raw evidence after partial failures."""
+    return "\n".join(notes or evidence_blocks or raw_notes)
+
+
+def _has_source_backed_citations(report: str, raw_notes: list[str]) -> bool:
+    """Check that retrieved source records are represented in the final report."""
+    has_sources = bool(re.search(r"--- SOURCE \[S[0-9a-f]{6}\]:", "\n".join(raw_notes)))
+    if not has_sources:
+        return True
+    body, _, sources = report.partition("### Sources")
+    return bool(re.findall(r"\[\d+\]", body)) and bool(
+        re.findall(r"^\[\d+\].*https?://", sources, re.M)
+    )
+
+
+def _source_ids(notes: list[str]) -> set[str]:
+    return set(re.findall(r"--- SOURCE \[(S[0-9a-f]{6})\]:", "\n".join(notes)))
+
+
+def _pending_dimensions(plan: list[dict]) -> list[dict]:
+    return [
+        item for item in plan
+        if item.get("status") in {"pending", "in_progress"}
+    ]
+
+
+def _plan_items_from_dimensions(dimensions) -> list[dict]:
+    return [
+        {
+            "id": dimension.dimension_id,
+            "subject": dimension.subject,
+            "aspect": dimension.aspect,
+            "deliverable": dimension.deliverable,
+            "requirement": dimension.research_topic,
+            "evidence_requirements": dimension.evidence_requirements,
+            "queries": dimension.search_queries,
+            "status": "pending",
+            "source_ids": [],
+            "attempts": 0,
+            "covered_requirements": [],
+        }
+        for dimension in dimensions
+    ]
+
+
+def _fallback_research_plan(state: SupervisorState) -> list[dict]:
+    brief = state.get("research_brief", "").strip()
+    topic = brief or "the user's research request"
+    return [{
+        "id": "D1",
+        "subject": topic[:120],
+        "aspect": "answer",
+        "deliverable": topic,
+        "requirement": topic,
+        "evidence_requirements": [topic],
+        "queries": [topic],
+        "status": "pending",
+        "source_ids": [],
+        "attempts": 0,
+        "covered_requirements": [],
+    }]
 
 
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
@@ -163,6 +287,7 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     Returns:
         Command to proceed to research supervisor with initialized context
     """
+    logger.info("Preparing research brief")
     # Step 1: Set up the research model for structured output
     configurable = Configuration.from_runnable_config(config)
     researcher_limit_param = "num_predict" if configurable.research_model.startswith("ollama:") else "max_tokens"
@@ -236,29 +361,62 @@ async def supervisor(
     }
 
     if not state.get("research_plan"):
+        logger.info("Creating research plan")
         planner_model = (
             configurable_model
             .with_structured_output(CreateResearchPlan)
             .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
             .with_config(research_model_config)
         )
-        plan_response = await planner_model.ainvoke(state.get("supervisor_messages", []))
-        research_plan = [
-            {
-                "id": dimension.dimension_id,
-                "subject": dimension.subject,
-                "aspect": dimension.aspect,
-                "deliverable": dimension.deliverable,
-                "requirement": dimension.research_topic,
-                "evidence_requirements": dimension.evidence_requirements,
-                "queries": dimension.search_queries,
-                "status": "pending",
-                "source_ids": [],
-                "attempts": 0,
-                "covered_requirements": [],
-            }
-            for dimension in plan_response.dimensions
+        planner_messages = [
+            SystemMessage(content=research_plan_prompt),
+            *state.get("supervisor_messages", []),
         ]
+        try:
+            plan_response = await planner_model.ainvoke(planner_messages)
+        except Exception as first_error:
+            logger.warning(
+                "Research plan generation failed; retrying with schema repair",
+                extra={"run_id": state.get("run_id", "unknown")},
+                exc_info=True,
+            )
+            repair_prompt = (
+                "The previous research plan was invalid. Generate the complete plan again "
+                "using the structured schema. Every dimension MUST include all fields: "
+                "dimension_id, subject, aspect, deliverable, research_topic, "
+                "evidence_requirements (non-empty list of atomic strings), and "
+                "search_queries (non-empty list of targeted strings). Do not omit any "
+                "field and do not return prose outside the structured response.\n"
+                f"Validation failure: {type(first_error).__name__}: {first_error}"
+            )
+            try:
+                plan_response = await planner_model.ainvoke(
+                    planner_messages + [HumanMessage(content=repair_prompt)]
+                )
+            except Exception:
+                logger.exception(
+                    "Research plan schema repair failed; using deterministic fallback",
+                    extra={"run_id": state.get("run_id", "unknown")},
+                )
+                research_plan = _fallback_research_plan(state)
+                plan_context = (
+                    "Planner recovery fallback used after structured-output validation "
+                    "failed. Research this dimension and preserve the error in diagnostics:\n"
+                    f"- {research_plan[0]['id']}: {research_plan[0]['requirement']}"
+                )
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "research_plan": research_plan,
+                        "research_errors": [
+                            "Research plan generation failed validation; deterministic "
+                            "fallback plan was used"
+                        ],
+                        "supervisor_messages": [HumanMessage(content=plan_context)],
+                    },
+                )
+        research_plan = _plan_items_from_dimensions(plan_response.dimensions)
+        logger.info("Research plan created: %d dimensions", len(research_plan))
         plan_context = "\n".join(
             f"- {item['id']}: {item['requirement']} "
             f"(requirements: {item['evidence_requirements']})"
@@ -333,20 +491,44 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
         tool_call["name"] == "ResearchComplete" 
         for tool_call in most_recent_message.tool_calls
     )
-    has_research_results = bool(state.get("raw_notes"))
-    has_pending_dimensions = any(
-        item["status"] == "pending" for item in state.get("research_plan", [])
-    )
+    plan_items = state.get("research_plan", [])
+    has_research_results = bool(_source_ids(state.get("raw_notes", [])))
+    has_pending_dimensions = bool(_pending_dimensions(plan_items))
+
+    # A model may stop calling tools before the deterministic plan is complete.
+    # Convert that idle turn into a bounded follow-up for the next pending item.
+    if (
+        (no_tool_calls or research_complete_tool_call)
+        and has_pending_dimensions
+        and not exceeded_allowed_iterations
+    ):
+        no_tool_calls = False
+        research_complete_tool_call = False
+        most_recent_message = AIMessage(content="")
 
     if (research_complete_tool_call or (no_tool_calls and not has_pending_dimensions)) and (
         not has_research_results or has_pending_dimensions
     ):
         if research_iterations >= configurable.max_researcher_iterations:
+            for item in plan_items:
+                if item["status"] in {"pending", "in_progress"}:
+                    item["status"] = "unavailable"
             return Command(
                 goto=END,
                 update={
                     "notes": get_notes_from_tool_calls(supervisor_messages),
-                    "research_brief": state.get("research_brief", "")
+                    "research_brief": state.get("research_brief", ""),
+                    "research_plan": {
+                        "type": "override",
+                        "value": plan_items,
+                    },
+                    "research_errors": [
+                        f"Research dimension {item['id']} was unavailable after "
+                        f"{item.get('attempts', 0)} attempt(s)"
+                        for item in plan_items
+                        if item["status"] == "unavailable"
+                        and not item.get("covered_requirements")
+                    ],
                 }
             )
         return Command(
@@ -373,11 +555,25 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
 
     # Exit if any termination condition is met
     if exceeded_allowed_iterations or no_tool_calls or research_complete_tool_call:
+        for item in plan_items:
+            if item["status"] in {"pending", "in_progress"}:
+                item["status"] = "unavailable"
         return Command(
             goto=END,
             update={
                 "notes": get_notes_from_tool_calls(supervisor_messages),
-                "research_brief": state.get("research_brief", "")
+                "research_brief": state.get("research_brief", ""),
+                "research_plan": {
+                    "type": "override",
+                    "value": plan_items,
+                },
+                "research_errors": [
+                    f"Research dimension {item['id']} was unavailable after "
+                    f"{item.get('attempts', 0)} attempt(s)"
+                    for item in plan_items
+                    if item["status"] == "unavailable"
+                    and not item.get("covered_requirements")
+                ],
             }
         )
     
@@ -465,6 +661,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             }]
 
     if conduct_research_calls and not plan_calls:
+        allowed_conduct_research_calls = []
         try:
             # Limit concurrent research units to prevent resource exhaustion
             allowed_conduct_research_calls = conduct_research_calls[:configurable.max_concurrent_research_units]
@@ -486,6 +683,11 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                     "attempts": 0,
                 })
                 item["attempts"] += 1
+                item["status"] = "in_progress"
+                logger.info(
+                    "Researching dimension %s (attempt %d/%d)",
+                    dimension_id, item["attempts"], MAX_DIMENSION_ATTEMPTS,
+                )
             
             # Execute research tasks in parallel
             research_tasks = [
@@ -504,26 +706,56 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                     "research_topic": tool_call["args"]["research_topic"],
                     "research_dimension_id": tool_call["args"].get("dimension_id", ""),
                     "evidence_requirements": tool_call["args"]["evidence_requirements"],
+                    "run_id": state.get("run_id", ""),
                 }, config) 
                 for tool_call in allowed_conduct_research_calls
             ]
             
-            tool_results = await asyncio.gather(*research_tasks)
-            
+            tool_results = await asyncio.gather(*research_tasks, return_exceptions=True)
+
             # Create tool messages with research results
             for observation, tool_call in zip(tool_results, allowed_conduct_research_calls):
+                if isinstance(observation, BaseException):
+                    dimension_id = tool_call["args"].get("dimension_id", "")
+                    error = (
+                        f"Research dimension {dimension_id} failed: "
+                        f"{type(observation).__name__}: {observation}"
+                    )
+                    logger.error(
+                        error,
+                        extra={"run_id": state.get("run_id", "unknown")},
+                        exc_info=(
+                            type(observation),
+                            observation,
+                            observation.__traceback__,
+                        ),
+                    )
+                    plan[dimension_id]["status"] = (
+                        "unavailable"
+                        if plan[dimension_id]["attempts"] >= MAX_DIMENSION_ATTEMPTS
+                        else "pending"
+                    )
+                    all_tool_messages.append(ToolMessage(
+                        content=error,
+                        name=tool_call["name"],
+                        tool_call_id=tool_call["id"],
+                    ))
+                    update_payload.setdefault("research_errors", []).append(error)
+                    continue
                 dimension_id = observation.get(
                     "research_dimension_id",
                     tool_call["args"].get("dimension_id", ""),
                 )
                 raw_notes = "\n".join(observation.get("raw_notes", []))
+                evidence_blocks = "\n".join(observation.get("evidence_blocks", []))
+                coverage_notes = evidence_blocks or raw_notes
                 if dimension_id in plan:
                     source_ids = sorted(
                         set(re.findall(r"\[?(S[0-9a-f]{6})\]?", raw_notes))
                     )
                     covered_requirements = sorted(_covered_requirement_numbers(
                         plan[dimension_id]["evidence_requirements"],
-                        raw_notes,
+                        coverage_notes,
                         source_ids,
                     ))
                     plan[dimension_id]["covered_requirements"] = covered_requirements
@@ -532,10 +764,29 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                         if set(covered_requirements)
                         >= set(range(1, len(plan[dimension_id]["evidence_requirements"]) + 1))
                         else "unavailable"
-                        if plan[dimension_id]["attempts"] >= 3
+                        if plan[dimension_id]["attempts"] >= MAX_DIMENSION_ATTEMPTS
                         else "pending"
                     )
                     plan[dimension_id]["source_ids"] = source_ids
+                    logger.info(
+                        "Dimension %s: %s, requirements %d/%d, sources %d",
+                        dimension_id,
+                        plan[dimension_id]["status"],
+                        len(covered_requirements),
+                        len(plan[dimension_id]["evidence_requirements"]),
+                        len(source_ids),
+                    )
+                    if not source_ids:
+                        empty_error = (
+                            f"Research dimension {dimension_id} returned no usable sources "
+                            f"on attempt {plan[dimension_id]['attempts']}"
+                        )
+                        update_payload.setdefault("research_errors", []).append(empty_error)
+                        all_tool_messages.append(ToolMessage(
+                            content=empty_error,
+                            name=tool_call["name"],
+                            tool_call_id=tool_call["id"],
+                        ))
                 all_tool_messages.append(ToolMessage(
                     content=(
                         f"Research dimension {dimension_id} result:\n"
@@ -557,26 +808,44 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             raw_notes_concat = "\n".join([
                 "\n".join(observation.get("raw_notes", [])) 
                 for observation in tool_results
+                if not isinstance(observation, BaseException)
             ])
             
             if raw_notes_concat:
                 update_payload["raw_notes"] = [raw_notes_concat]
+            evidence_blocks = [
+                block
+                for observation in tool_results
+                if not isinstance(observation, BaseException)
+                for block in observation.get("evidence_blocks", [])
+            ]
+            if evidence_blocks:
+                update_payload["evidence_blocks"] = evidence_blocks
                 
         except Exception as e:
-            # Handle research execution errors
-            if is_token_limit_exceeded(e, configurable.research_model) or True:
-                # Token limit exceeded or other error - end research phase
-                return Command(
-                    goto=END,
-                    update={
-                        "notes": get_notes_from_tool_calls(supervisor_messages),
-                        "research_brief": state.get("research_brief", "")
-                    }
-                )
+            error = f"Research orchestration failed: {type(e).__name__}: {e}"
+            logger.exception(error, extra={"run_id": state.get("run_id", "unknown")})
+            for tool_call in allowed_conduct_research_calls:
+                dimension_id = tool_call["args"].get("dimension_id", "")
+                if dimension_id in plan:
+                    plan[dimension_id]["status"] = (
+                        "unavailable"
+                        if plan[dimension_id]["attempts"] >= MAX_DIMENSION_ATTEMPTS
+                        else "pending"
+                    )
+            all_tool_messages.append(ToolMessage(
+                content=error,
+                name="research_error",
+                tool_call_id="research_error",
+            ))
+            update_payload["research_errors"] = [error]
     
     # Step 3: Return command with all tool results
     update_payload["supervisor_messages"] = all_tool_messages
-    update_payload["research_plan"] = list(plan.values())
+    update_payload["research_plan"] = {
+        "type": "override",
+        "value": list(plan.values()),
+    }
     return Command(
         goto="supervisor",
         update=update_payload
@@ -584,7 +853,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
 
 # Supervisor Subgraph Construction
 # Creates the supervisor workflow that manages research delegation and coordination
-supervisor_builder = StateGraph(SupervisorState, config_schema=Configuration)
+supervisor_builder = StateGraph(SupervisorState, context_schema=Configuration)
 
 # Add supervisor nodes for research management
 supervisor_builder.add_node("supervisor", supervisor)           # Main supervisor logic
@@ -658,11 +927,16 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     )
 
 # Tool Execution Helper Function
-async def execute_tool_safely(tool, args, config):
+async def execute_tool_safely(tool, args, config, run_id="unknown"):
     """Safely execute a tool with error handling."""
     try:
         return await tool.ainvoke(args, config)
     except Exception as e:
+        logger.exception(
+            "Tool %s failed",
+            getattr(tool, "name", "unknown"),
+            extra={"run_id": run_id},
+        )
         return f"Error executing tool: {str(e)}"
 
 
@@ -701,7 +975,12 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     # Execute all tool calls in parallel
     tool_calls = most_recent_message.tool_calls
     tool_execution_tasks = [
-        execute_tool_safely(tools_by_name[tool_call["name"]], tool_call["args"], config) 
+        execute_tool_safely(
+            tools_by_name[tool_call["name"]],
+            tool_call["args"],
+            config,
+            state.get("run_id", "unknown"),
+        )
         for tool_call in tool_calls
     ]
     observations = await asyncio.gather(*tool_execution_tasks)
@@ -750,6 +1029,7 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     Returns:
         Dictionary containing compressed research summary and raw notes
     """
+    logger.info("Compressing findings for dimension %s", state.get("research_dimension_id", "unknown"))
     # Step 1: Configure the compression model
     configurable = Configuration.from_runnable_config(config)
     compression_limit_param = "num_predict" if configurable.compression_model.startswith("ollama:") else "max_tokens"
@@ -794,17 +1074,24 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
             raw_notes_content = "\n".join([
                 str(message.content) 
                 for message in filter_messages(researcher_messages, include_types=["tool", "ai"])
-            ])
+            ] + [str(response.content)])
             
             # Return successful compression result
             return {
                 "compressed_research": str(response.content),
                 "raw_notes": [raw_notes_content],
+                "evidence_blocks": [str(response.content)],
                 "research_dimension_id": state.get("research_dimension_id", ""),
             }
             
         except Exception as e:
             synthesis_attempts += 1
+            logger.warning(
+                "Research compression attempt %d failed",
+                synthesis_attempts,
+                extra={"run_id": state.get("run_id", "unknown")},
+                exc_info=True,
+            )
             
             # Handle token limit exceeded by removing older messages
             if is_token_limit_exceeded(e, configurable.research_model):
@@ -823,6 +1110,7 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     return {
         "compressed_research": "Error synthesizing research report: Maximum retries exceeded",
         "raw_notes": [raw_notes_content],
+        "evidence_blocks": [],
         "research_dimension_id": state.get("research_dimension_id", ""),
     }
 
@@ -830,8 +1118,8 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
 # Creates individual researcher workflow for conducting focused research on specific topics
 researcher_builder = StateGraph(
     ResearcherState, 
-    output=ResearcherOutputState, 
-    config_schema=Configuration
+    output_schema=ResearcherOutputState,
+    context_schema=Configuration,
 )
 
 # Add researcher nodes for research execution and compression
@@ -861,9 +1149,32 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
     """
     # Step 1: Extract research findings and prepare state cleanup
     notes = state.get("notes", [])
-    cleared_state = {"notes": {"type": "override", "value": []}}
-    findings = "\n".join(notes)
+    raw_notes = state.get("raw_notes", [])
     research_plan = state.get("research_plan", [])
+    pending = _pending_dimensions(research_plan)
+    if pending:
+        message = (
+            "Research incomplete: pending dimensions were not resolved: "
+            + ", ".join(item["id"] for item in pending)
+        )
+        logger.warning("%s", message)
+        return {
+            "final_report": message,
+            "messages": [AIMessage(content=message)],
+            "report_dimension_ids": [],
+            "report_evidence_markers": [],
+        }
+    cleared_state = {"notes": {"type": "override", "value": []}}
+    findings = _findings_for_report(
+        notes,
+        state.get("evidence_blocks", []),
+        raw_notes,
+    )
+    logger.info(
+        "Writing report: %d dimensions covered, %d unavailable",
+        sum(item.get("status") == "covered" for item in research_plan),
+        sum(item.get("status") == "unavailable" for item in research_plan),
+    )
     
     # Step 2: Configure the final report generation model
     configurable = Configuration.from_runnable_config(config)
@@ -893,6 +1204,10 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                     f"status: {item['status']}, sources: {', '.join(item['source_ids']) or 'none'})"
                     for item in research_plan
                 ),
+                dimension_markers="\n".join(
+                    f"<!-- dimension: {item['id']} -->"
+                    for item in research_plan
+                ),
                 coverage_markers="\n".join(
                     f"<!-- evidence: {item['id']}:{number} -->"
                     for item in research_plan
@@ -908,22 +1223,101 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
             
             report_text = str(final_report.content)
             missing_requirements = _missing_report_requirements(report_text, research_plan)
-            if missing_requirements:
-                repair_prompt = (
-                    "Repair this report by adding only the missing evidence markers and "
-                    "the corresponding source-backed content. Preserve existing content and "
-                    "citations. Missing markers: "
-                    f"{', '.join(missing_requirements)}\n\nReport:\n{report_text}"
+            missing_dimensions = _missing_report_dimensions(report_text, research_plan)
+            if missing_requirements or missing_dimensions:
+                logger.info(
+                    "Repairing report: %d missing dimensions, %d missing evidence markers",
+                    len(missing_dimensions), len(missing_requirements),
                 )
-                final_report = await configurable_model.with_config(writer_model_config).ainvoke([
+                missing_plan = "\n".join(
+                    f"- {item['id']}: {item['requirement']} "
+                    f"(subject: {item['subject']}; aspect: {item['aspect']}; "
+                    f"evidence requirements: {item['evidence_requirements']}; "
+                    f"sources: {', '.join(item['source_ids']) or 'none'})"
+                    for item in research_plan
+                    if item["id"] in missing_dimensions
+                    or any(
+                        marker.startswith(f"{item['id']}:")
+                        for marker in missing_requirements
+                    )
+                )
+                repair_prompt = (
+                    "Return only new sections for the missing dimensions below. Do not "
+                    "rewrite or summarize the existing report. Use the supplied findings "
+                    "and source IDs; never invent citations. Include every requested "
+                    "dimension and evidence marker.\n\nMissing plan:\n"
+                    f"{missing_plan}\n\nMissing dimensions: "
+                    f"{', '.join(missing_dimensions) or 'none'}; missing evidence markers: "
+                    f"{', '.join(missing_requirements) or 'none'}\n\n"
+                    f"Findings:\n{findings}\n\nExisting report:\n{report_text}"
+                )
+                repaired_report = await configurable_model.with_config(writer_model_config).ainvoke([
                     HumanMessage(content=repair_prompt)
                 ])
-                report_text = str(final_report.content)
-            report_text = re.sub(r"<!-- evidence: [^>]+ -->\s*", "", report_text)
-            final_report.content = finalize_citations(report_text, state.get("raw_notes", []))
+                report_text = _merge_report_repair(
+                    report_text,
+                    str(repaired_report.content),
+                    research_plan,
+                )
+                repaired_missing_requirements = _missing_report_requirements(
+                    report_text,
+                    research_plan,
+                )
+                repaired_missing_dimensions = _missing_report_dimensions(
+                    report_text,
+                    research_plan,
+                )
+                if repaired_missing_requirements or repaired_missing_dimensions:
+                    error = (
+                        "Report repair failed coverage validation: "
+                        f"missing dimensions={repaired_missing_dimensions or 'none'}, "
+                        f"missing evidence={repaired_missing_requirements or 'none'}"
+                    )
+                    logger.error(error, extra={"run_id": state.get("run_id", "unknown")})
+                    return {
+                        "final_report": f"Error generating final report: {error}",
+                        "messages": [AIMessage(content=error)],
+                    }
+            report_dimension_ids = sorted(set(re.findall(
+                r"<!-- dimension: ([^ ]+) -->",
+                report_text,
+            )))
+            report_evidence_markers = sorted(set(re.findall(
+                r"<!-- evidence: ([^ ]+:\d+) -->",
+                report_text,
+            )))
+            report_text = re.sub(
+                r"<!-- (?:evidence: [^>]+|dimension: [^>]+) -->\s*",
+                "",
+                report_text,
+            )
+            plan_errors = _research_plan_errors(research_plan)
+            if plan_errors:
+                error = "Research plan validation failed: " + "; ".join(plan_errors)
+                logger.error(error, extra={"run_id": state.get("run_id", "unknown")})
+                return {
+                    "final_report": f"Error generating final report: {error}",
+                    "messages": [AIMessage(content=error)],
+                    **cleared_state
+                }
+            final_report.content = finalize_citations(report_text, raw_notes)
+            if not _has_source_backed_citations(final_report.content, raw_notes):
+                error = (
+                    "Final report omitted citations despite retrieved source evidence. "
+                    "The report was rejected to avoid returning unsupported claims."
+                )
+                logger.error(error, extra={"run_id": state.get("run_id", "unknown")})
+                return {
+                    "final_report": f"Error generating final report: {error}",
+                    "messages": [AIMessage(content=error)],
+                    **cleared_state
+                }
+            logger.info("Final report generated")
             return {
                 "final_report": final_report.content, 
                 "messages": [final_report],
+                "report_dimension_ids": report_dimension_ids,
+                "report_evidence_markers": report_evidence_markers,
                 **cleared_state
             }
             
@@ -952,6 +1346,10 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 continue
             else:
                 # Non-token-limit error: return error immediately
+                logger.exception(
+                    "Final report generation failed",
+                    extra={"run_id": state.get("run_id", "unknown")},
+                )
                 return {
                     "final_report": f"Error generating final report: {e}",
                     "messages": [AIMessage(content="Report generation failed due to an error")],
@@ -969,8 +1367,8 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
 # Creates the complete deep research workflow from user input to final report
 deep_researcher_builder = StateGraph(
     AgentState, 
-    input=AgentInputState, 
-    config_schema=Configuration
+    input_schema=AgentInputState,
+    context_schema=Configuration,
 )
 
 # Add main workflow nodes for the complete research process
